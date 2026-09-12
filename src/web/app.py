@@ -933,6 +933,7 @@ if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
+@app.head("/", include_in_schema=False)
 @app.get("/", response_class=HTMLResponse, summary="决策支持大屏前端入口")
 async def serve_dashboard():
     """
