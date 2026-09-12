@@ -130,6 +130,17 @@ class SumoSimulationSandbox:
         webster_on = bool(control_params.get("webster", scheme in ("webster", "agent_dss")))
         green_wave_on = bool(control_params.get("green_wave", scheme == "agent_dss"))
 
+        # ---- VMS diversion setup ------------------------------------------------- #
+        # Vehicles may only be rerouted while they are still on the shared upstream
+        # approach edge. `entry_J1` and `entry_div` both branch off node `entry_W`, so a
+        # vehicle that has already entered `entry_J1` has physically passed the fork and
+        # can no longer be sent onto the bypass.
+        approach_edge = "approach_W"
+        bypass_route_edges = ["approach_W", "entry_div", "div_byp", "byp_mer", "mer_exit"]
+        reroute_threshold = max(0, min(100, int(round(reroute_ratio * 100))))
+        reroute_errors: List[str] = []
+        diversion_decided: set = set()
+
         # Arterial progression plan (computed by the green-wave tool and forwarded here).
         gw_offsets = [float(o) for o in (control_params.get("green_wave_offsets") or [])]
         cycle_length = max(1.0, float(control_params.get("cycle_length") or 90.0))
@@ -167,31 +178,37 @@ class SumoSimulationSandbox:
 
         incident_injected = False
         incident_cleared = False
+        # Speed limits captured at incident-injection time, so the clearance step can restore
+        # the road exactly instead of forcing every scenario back to a hard-coded 60 km/h.
+        original_lane_speeds: Dict[str, float] = {}
 
         try:
             tls_list = conn.trafficlight.getIDList()
             all_edges = conn.edge.getIDList()
             bottleneck_edge = "J1_J2"
+            incident_lanes = (f"{bottleneck_edge}_0", f"{bottleneck_edge}_1")
 
             for step in range(duration):
                 # 1. Inject Incident (Bottleneck collision/blockage on J1_J2)
                 if not incident_injected and step >= incident_start:
-                    # Slow down and block lanes 0 & 1 on bottleneck edge
-                    try:
-                        conn.lane.setMaxSpeed(f"{bottleneck_edge}_0", 0.5)
-                        conn.lane.setMaxSpeed(f"{bottleneck_edge}_1", 0.5)
-                        incident_injected = True
-                    except Exception:
-                        pass
+                    # Block the affected lanes, remembering each lane's original speed limit.
+                    for lane_id in incident_lanes:
+                        try:
+                            if lane_id not in original_lane_speeds:
+                                original_lane_speeds[lane_id] = conn.lane.getMaxSpeed(lane_id)
+                            conn.lane.setMaxSpeed(lane_id, 0.5)
+                        except Exception:
+                            pass
+                    incident_injected = True
 
-                # Clear Incident
+                # Clear Incident: restore the ORIGINAL speed limits (not a hard-coded value)
                 if incident_injected and not incident_cleared and step >= incident_end:
-                    try:
-                        conn.lane.setMaxSpeed(f"{bottleneck_edge}_0", 16.67)
-                        conn.lane.setMaxSpeed(f"{bottleneck_edge}_1", 16.67)
-                        incident_cleared = True
-                    except Exception:
-                        pass
+                    for lane_id, original_speed in original_lane_speeds.items():
+                        try:
+                            conn.lane.setMaxSpeed(lane_id, original_speed)
+                        except Exception:
+                            pass
+                    incident_cleared = True
 
                 # 2. Dynamic Signal Control
                 #    (a) green_wave_on -> arterial progression: every junction's arterial
@@ -217,16 +234,33 @@ class SumoSimulationSandbox:
                             pass
 
                 # 3. Dynamic Rerouting via VMS (deterministic, reproducible assignment)
-                if reroute_ratio > 0.0 and step >= incident_start:
-                    # Check vehicles entering entry_J1 and reroute a fixed fraction to bypass
+                if reroute_threshold > 0 and step >= incident_start:
                     try:
-                        veh_ids = conn.edge.getLastStepVehicleIDs("entry_J1")
-                        for vid in veh_ids:
-                            if _stable_bucket(f"{vid}_{step}") % 100 < int(reroute_ratio * 100):
-                                conn.vehicle.changeRoute(vid, ["entry_div", "div_byp", "byp_mer", "mer_exit"])
+                        approach_vehs = conn.edge.getLastStepVehicleIDs(approach_edge)
+                        for vid in approach_vehs:
+                            # Decide each vehicle exactly once, while it is still on the
+                            # approach. Re-deciding every step would both inflate the command
+                            # count and multiply the diversion probability per vehicle.
+                            if vid in diversion_decided:
+                                continue
+                            diversion_decided.add(vid)
+                            if list(conn.vehicle.getRoute(vid)) == bypass_route_edges:
+                                # Already routed onto the bypass (natural diversion demand):
+                                # this is not a VMS action and must not be counted as one.
+                                continue
+                            # The diversion decision is bound to the VEHICLE, not to the
+                            # (vehicle, step) pair. Per-step sampling would divert roughly
+                            # 1-(1-r)^n of all vehicles (n = steps spent on the approach),
+                            # i.e. a "25% diversion" would in practice divert almost everyone.
+                            if _stable_bucket(vid) % 100 < reroute_threshold:
+                                conn.vehicle.setRoute(vid, bypass_route_edges)
                                 reroute_commands += 1
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        # Never swallow control failures silently: they are reported through
+                        # control_evidence so a non-acting control cannot masquerade as an
+                        # applied one.
+                        if len(reroute_errors) < 5:
+                            reroute_errors.append(f"{type(exc).__name__}: {exc}")
 
                 # Step the simulation
                 conn.simulationStep()
@@ -245,9 +279,22 @@ class SumoSimulationSandbox:
                     total_co2 += co2_step * 5.0
                     total_fuel += fuel_step * 5.0
 
-                    waiting_time = sum(conn.edge.getWaitingTime(e) for e in all_edges)
-                    active_vehs = max(1, conn.vehicle.getIDCount())
-                    avg_delay = waiting_time / active_vehs
+                    # Average trip time loss (s/veh).
+                    # NOTE: `edge.getWaitingTime()` only accumulates time spent below 0.1 m/s
+                    # and is NOT trip delay. TraCI's per-vehicle `getTimeLoss()` uses the same
+                    # definition as SUMO's tripinfo `timeLoss`, which is the metric the
+                    # evaluator and the decision brief must report.
+                    active_veh_ids = conn.vehicle.getIDList()
+                    if active_veh_ids:
+                        losses = []
+                        for vid in active_veh_ids:
+                            try:
+                                losses.append(conn.vehicle.getTimeLoss(vid))
+                            except Exception:
+                                pass
+                        avg_delay = sum(losses) / len(losses) if losses else 0.0
+                    else:
+                        avg_delay = 0.0
 
                     time_stamps.append(step)
                     bottleneck_queues.append(round(q_length_m, 1))
@@ -270,6 +317,7 @@ class SumoSimulationSandbox:
             "vehicle_speeds": [s / 3.6 for s in bottleneck_speeds],  # in m/s for evaluator
             "bottleneck_speeds_kmh": bottleneck_speeds,
             "vehicle_delays": network_delays,
+            "delay_metric": "mean_vehicle_time_loss_s_per_veh (SUMO tripinfo `timeLoss` definition)",
             "completed_trips": completed_vehicles,
             "total_co2_mg": total_co2,
             "total_fuel_ml": total_fuel,
@@ -281,7 +329,12 @@ class SumoSimulationSandbox:
                 "cycle_length": cycle_length,
                 "arterial_green": arterial_green,
                 "reroute_ratio_applied": reroute_ratio,
+                "reroute_source_edge": approach_edge,
                 "signal_commands": signal_commands,
                 "reroute_commands": reroute_commands,
+                "reroute_errors": reroute_errors,
+                "incident_injected": incident_injected,
+                "incident_cleared": incident_cleared,
+                "lane_speeds_restored": {k: round(v, 2) for k, v in original_lane_speeds.items()},
             },
         }

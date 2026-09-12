@@ -93,10 +93,10 @@ def generate_routes(scenario_dir: Path):
     <vType id="priority_car" accel="3.0" decel="4.5" sigma="0.2" length="4.8" minGap="2.0" maxSpeed="18.0" color="red"/>
 
     <!-- Key Route Definitions -->
-    <!-- Main Arterial Eastbound -->
-    <route id="r_main_EB" edges="entry_J1 J1_J2 J2_J3 J3_exit"/>
-    <!-- North Parallel Bypass Eastbound -->
-    <route id="r_byp_EB" edges="entry_div div_byp byp_mer mer_exit"/>
+    <!-- Main Arterial Eastbound (enters through the shared upstream approach) -->
+    <route id="r_main_EB" edges="approach_W entry_J1 J1_J2 J2_J3 J3_exit"/>
+    <!-- North Parallel Bypass Eastbound (same approach, diverted at entry_W) -->
+    <route id="r_byp_EB" edges="approach_W entry_div div_byp byp_mer mer_exit"/>
 
     <!-- Main Arterial Westbound -->
     <route id="r_main_WB" edges="exit_J3 J3_J2 J2_J1 J1_entry"/>
@@ -112,15 +112,14 @@ def generate_routes(scenario_dir: Path):
     <route id="r_J3_SN" edges="S3_J3 J3_N3"/>
 
     <!-- Traffic Flows (600s simulation horizon) -->
+    <!-- NOTE: flows MUST be listed in non-decreasing `begin` order. SUMO silently IGNORES
+         any flow that appears out of order ("Route file should be sorted by departure
+         time, ignoring ..."), which previously dropped 7 of the 12 demand flows. -->
+
+    <!-- begin = 0 -->
     <!-- 1. Off-peak background flows (0-100s, ~1200 veh/h on main) -->
     <flow id="f_bg_EB" route="r_main_EB" type="passenger" begin="0" end="100" probability="0.33" departLane="best"/>
     <flow id="f_bg_WB" route="r_main_WB" type="passenger" begin="0" end="600" probability="0.25" departLane="best"/>
-
-    <!-- 2. Peak surge flows on Main Arterial (100-500s, ~2000 veh/h, saturated) -->
-    <flow id="f_peak_EB" route="r_main_EB" type="passenger" begin="100" end="500" probability="0.55" departLane="best"/>
-
-    <!-- 3. Post-peak recovery flow (500-600s) -->
-    <flow id="f_post_EB" route="r_main_EB" type="passenger" begin="500" end="600" probability="0.28" departLane="best"/>
 
     <!-- 4. Natural bypass flow (small fraction default) -->
     <flow id="f_byp_natural" route="r_byp_EB" type="passenger" begin="0" end="600" probability="0.08" departLane="best"/>
@@ -134,6 +133,14 @@ def generate_routes(scenario_dir: Path):
 
     <flow id="f_J3_NS" route="r_J3_NS" type="passenger" begin="0" end="600" probability="0.16" departLane="best"/>
     <flow id="f_J3_SN" route="r_J3_SN" type="passenger" begin="0" end="600" probability="0.16" departLane="best"/>
+
+    <!-- begin = 100 -->
+    <!-- 2. Peak surge flows on Main Arterial (100-500s, ~2000 veh/h, saturated) -->
+    <flow id="f_peak_EB" route="r_main_EB" type="passenger" begin="100" end="500" probability="0.55" departLane="best"/>
+
+    <!-- begin = 500 -->
+    <!-- 3. Post-peak recovery flow (500-600s) -->
+    <flow id="f_post_EB" route="r_main_EB" type="passenger" begin="500" end="600" probability="0.28" departLane="best"/>
 </routes>
 """
     with open(rou_file, "w", encoding="utf-8") as f:

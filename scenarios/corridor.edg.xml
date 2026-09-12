@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <edges xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/edges_file.xsd">
     <!-- Main Arterial Links (Dual 6-Lane, Speed 60 km/h = 16.67 m/s) -->
+    <!-- Shared upstream approach: carries BOTH arterial and bypass demand, so a vehicle on
+         this edge can still be rerouted onto either branch at entry_W. -->
+    <edge id="approach_W" from="origin_W" to="entry_W" numLanes="3" speed="16.67"/>
+
     <edge id="entry_J1" from="entry_W" to="J1" numLanes="3" speed="16.67"/>
     <edge id="J1_entry" from="J1" to="entry_W" numLanes="3" speed="16.67"/>
 

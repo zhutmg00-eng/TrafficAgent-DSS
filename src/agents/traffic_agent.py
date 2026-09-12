@@ -115,17 +115,28 @@ class TrafficDecisionAgent:
             "reasoning_error": error,
         }
 
-    def _tool_plan(self) -> Dict[str, Any]:
+    def _tool_plan(self, diagnosis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
-        Shared deterministic traffic-engineering computation for J1-J3 corridor.
+        Shared deterministic traffic-engineering computation for the J1-J3 corridor.
 
-        NOTE: the phase flows below are the calibrated corridor reference values.
-        Wiring them to live detector feeds is tracked as a separate work item.
+        Detector-derived quantities (queue length, blockage ratio, cross-section occupancy,
+        bypass occupancy) are read from the diagnosis payload, so the optimised parameters
+        actually respond to the observed incident instead of a frozen scenario constant.
+        Only the phase-level demand split remains a corridor calibration constant, because
+        a single cross-section detector cannot resolve per-approach flows.
         """
-        timing = self.webster.compute_timing(
-            phase_flows=[1600.0, 400.0, 500.0, 300.0],
-            phase_lanes=[3, 1, 2, 1],
-        )
+        state = (diagnosis or {}).get("input_state") or {}
+
+        queue_m = float(state.get("queue_m", 165.0))
+        link_len = float(state.get("link_length_m", 300.0))
+        occupancy = float(state.get("occupancy", 0.82))
+        bypass_occ = float(state.get("bypass_occupancy", 0.28))
+
+        # Corridor-calibrated demand profile (pcu/h per phase) and approach lane counts.
+        phase_flows = [1600.0, 400.0, 500.0, 300.0]
+        phase_lanes = [3, 1, 2, 1]
+
+        timing = self.webster.compute_timing(phase_flows=phase_flows, phase_lanes=phase_lanes)
         arterial_green = timing["green_splits"][0]
         gw_plan = self.green_wave.compute_offsets(
             intersection_distances=[300.0, 300.0],
@@ -134,11 +145,11 @@ class TrafficDecisionAgent:
             progression_speed=13.89,  # 50 km/h
         )
         reroute_plan = self.rerouter.calculate_diversion(
-            bottleneck_queue_meters=165.0,
-            bottleneck_link_length=300.0,
-            bottleneck_occupancy=0.82,
+            bottleneck_queue_meters=queue_m,
+            bottleneck_link_length=link_len,
+            bottleneck_occupancy=occupancy,
             upstream_flow_vph=1800.0,
-            bypass_current_occupancy=0.28,
+            bypass_current_occupancy=bypass_occ,
             bypass_spare_capacity_vph=1200.0,
         )
         return {
@@ -146,6 +157,19 @@ class TrafficDecisionAgent:
             "green_wave": gw_plan,
             "reroute": reroute_plan,
             "arterial_green": arterial_green,
+            "inputs_used": {
+                "source": (
+                    "diagnosis.input_state (detector-derived)"
+                    if state
+                    else "corridor calibration defaults (no diagnosis supplied)"
+                ),
+                "queue_m": queue_m,
+                "link_length_m": link_len,
+                "bottleneck_occupancy": occupancy,
+                "bypass_occupancy": bypass_occ,
+                "phase_flows_pcu_h": phase_flows,
+                "phase_lanes": phase_lanes,
+            },
         }
 
     # ------------------------------------------------------------------ #
@@ -273,7 +297,7 @@ class TrafficDecisionAgent:
         The LLM writes only the narrative layer (descriptions, rationale, VMS copy),
         and is explicitly forbidden from altering the computed values.
         """
-        plan = self._tool_plan()
+        plan = self._tool_plan(diagnosis)
         timing = plan["timing"]
         gw_plan = plan["green_wave"]
         reroute_plan = plan["reroute"]
@@ -370,6 +394,7 @@ class TrafficDecisionAgent:
             "webster_details": timing,
             "green_wave_details": gw_plan,
             "reroute_details": reroute_plan,
+            "input_state_used": plan["inputs_used"],
             "narrative_mode": narrative_mode["reasoning_mode"],
             "narrative_engine": narrative_mode["reasoning_engine"],
             "narrative_label": narrative_mode["reasoning_label"],
@@ -387,6 +412,7 @@ class TrafficDecisionAgent:
         use_rerouting: bool = True,
         use_green_wave: bool = True,
         use_webster: bool = True,
+        diagnosis: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Executes parallel What-If rollouts in SUMO for Baseline, Strategy A, and Strategy B,
@@ -394,8 +420,12 @@ class TrafficDecisionAgent:
 
         The control switches below are forwarded verbatim into the TraCI sandbox, so the
         difference between strategies is caused by controls that are actually applied.
+
+        When a diagnosis payload is supplied, the Webster / green-wave / rerouting parameters
+        are derived from the observed incident state instead of the corridor calibration
+        defaults, closing the diagnosis -> strategy loop.
         """
-        plan = self._tool_plan()
+        plan = self._tool_plan(diagnosis)
         timing = plan["timing"]
         gw_plan = plan["green_wave"]
         reroute_ratio = plan["reroute"]["diversion_ratio"] if use_rerouting else 0.0
@@ -452,6 +482,7 @@ class TrafficDecisionAgent:
             "execution_mode": "physical_sumo_sandbox",
             "simulation_duration": duration,
             "time_stamps": res_base["time_stamps"],
+            "strategy_inputs": plan["inputs_used"],
             "control_evidence": {
                 "baseline": res_base.get("control_evidence", {}),
                 "strategy_a": res_a.get("control_evidence", {}),

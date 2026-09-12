@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <nodes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/nodes_file.xsd">
     <!-- Main Arterial Junctions -->
+    <!-- Upstream shared approach: the VMS diversion decision point. Traffic bound for the
+         arterial and for the parallel bypass both enter here and are routed at entry_W. -->
+    <node id="origin_W" x="-800.0" y="0.0" type="priority"/>
     <node id="entry_W" x="-600.0" y="0.0" type="priority"/>
     <node id="J1" x="-300.0" y="0.0" type="traffic_light" tl="J1"/>
     <node id="J2" x="0.0" y="0.0" type="traffic_light" tl="J2"/>

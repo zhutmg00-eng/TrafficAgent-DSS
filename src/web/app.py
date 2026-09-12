@@ -379,13 +379,26 @@ async def execute_rollout(config: Optional[RolloutConfigInput] = None):
 
     if cfg.run_physical_sandbox:
         try:
+            # Close the diagnosis -> strategy -> control loop: the detector state drives the
+            # Webster / green-wave / rerouting parameters that the sandbox then applies.
+            default_state = {
+                "bottleneck_edge": "J1_J2 (主干线合流段)",
+                "queue_m": 165.0,
+                "link_length_m": 300.0,
+                "speed_kmh": 8.2,
+                "occupancy": 0.82,
+                "bypass_occupancy": 0.28
+            }
+            diag = agent.diagnose_bottleneck(default_state)
+
             rollout_raw = agent.execute_what_if_rollout(
                 duration=cfg.duration,
                 incident_start=cfg.incident_start,
                 incident_end=cfg.incident_end,
                 use_rerouting=cfg.use_rerouting,
                 use_green_wave=cfg.use_green_wave,
-                use_webster=cfg.use_webster
+                use_webster=cfg.use_webster,
+                diagnosis=diag
             )
             # Format time-series for frontend charts
             time_steps = rollout_raw.get("time_stamps", list(range(0, cfg.duration + 1, 10)))

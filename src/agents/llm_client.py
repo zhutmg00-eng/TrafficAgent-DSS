@@ -15,6 +15,27 @@ import re
 from typing import Any, Dict, Optional, Tuple
 
 
+def _load_dotenv_if_available() -> None:
+    """
+    Load a local `.env` file when python-dotenv is installed (see `.env.example`).
+
+    Optional by design: credentials may equally be injected through real environment
+    variables, so a missing package must never break the import.
+    """
+    try:
+        from dotenv import load_dotenv  # noqa: WPS433 (optional dependency)
+    except Exception:
+        return
+    try:
+        load_dotenv(override=False)
+    except Exception:
+        pass
+
+
+# Populate LLM_API_KEY / LLM_BASE_URL / LLM_MODEL from .env once, at import time.
+_load_dotenv_if_available()
+
+
 class LLMReasoningClient:
     """Thin wrapper over any OpenAI-compatible chat completion endpoint."""
 
