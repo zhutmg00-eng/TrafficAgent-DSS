@@ -8,6 +8,7 @@ import sys
 import time
 import shutil
 import zlib
+import uuid
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 import numpy as np
@@ -324,9 +325,14 @@ class SumoSimulationSandbox:
         signal_commands = 0
         reroute_commands = 0
 
-        # Generate unique connection label to allow concurrent runs
+        # Check SUMO executable existence
+        resolved_bin = shutil.which(self.sumo_bin) or (self.sumo_bin if Path(self.sumo_bin).exists() else None)
+        if not resolved_bin:
+            raise FileNotFoundError(f"SUMO executable not found: '{self.sumo_bin}'. Please verify SUMO installation or SUMO_HOME.")
+
+        # Generate unique connection label to prevent collisions under concurrency
         self.port_counter += 1
-        label = f"sim_{scheme}_{self.port_counter}_{int(time.time())}"
+        label = f"sim_{scheme}_{os.getpid()}_{self.port_counter}_{uuid.uuid4().hex[:8]}"
 
         cmd = [
             self.sumo_bin,
@@ -347,8 +353,7 @@ class SumoSimulationSandbox:
             cmd.extend(["--seed", str(safe_seed)])
 
         conn = None
-        traci.start(cmd, label=label)
-        conn = traci.getConnection(label)
+        started = False
 
         # Time-series collection
         time_stamps = []
@@ -366,6 +371,15 @@ class SumoSimulationSandbox:
         original_lane_speeds: Dict[str, float] = {}
 
         try:
+            try:
+                traci.start(cmd, label=label)
+                started = True
+                conn = traci.getConnection(label)
+            except FileNotFoundError:
+                raise
+            except Exception as start_err:
+                raise RuntimeError(f"Failed to start SUMO TraCI process: {start_err}") from start_err
+
             tls_list = conn.trafficlight.getIDList()
             all_edges = conn.edge.getIDList()
             bottleneck_edge = "J1_J2"
@@ -494,7 +508,32 @@ class SumoSimulationSandbox:
         finally:
             if conn is not None:
                 try:
-                    conn.close()
+                    conn.close(wait=False)
+                    proc = getattr(conn, "_process", None)
+                    if proc is not None:
+                        try:
+                            proc.wait(timeout=5.0)
+                        except Exception:
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+                except Exception:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+            elif started:
+                try:
+                    if hasattr(traci, "connection") and traci.connection.has(label):
+                        c = traci.getConnection(label)
+                        c.close(wait=False)
+                        proc = getattr(c, "_process", None)
+                        if proc is not None:
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
                 except Exception:
                     pass
 

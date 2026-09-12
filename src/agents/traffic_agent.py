@@ -14,8 +14,44 @@ What-If推演 coordination, and structured decision briefing generation.
 import os
 import sys
 import json
+import math
 from pathlib import Path
 from typing import Dict, List, Any, Optional
+
+
+def _safe_float(val: Any, default: float, min_val: Optional[float] = None, max_val: Optional[float] = None) -> float:
+    """Extracts a finite float defending against None, NaN, and Inf, bounded by min/max."""
+    if val is None:
+        return default
+    try:
+        v = float(val)
+        if not math.isfinite(v):
+            return default
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None:
+        v = max(min_val, v)
+    if max_val is not None:
+        v = min(max_val, v)
+    return v
+
+
+def _parse_bool(val: Any, default: bool = False) -> bool:
+    """Safely parses boolean values from JSON payloads (strings, booleans, numbers)."""
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in ("false", "0", "no", "n", "off"):
+            return False
+        if s in ("true", "1", "yes", "y", "on"):
+            return True
+        return default
+    if isinstance(val, (int, float)):
+        return bool(val)
+    return default
 
 # Add project root to sys.path
 root_dir = Path(__file__).resolve().parent.parent.parent
@@ -248,12 +284,16 @@ class TrafficDecisionAgent:
         queue_ratio: float,
     ) -> Dict[str, Any]:
         """Deterministic rule-based diagnosis (fallback path, always available)."""
+        occ_pct = int(round(min(1.0, max(0.0, occupancy)) * 100))
+        queue_ratio_pct = int(round(min(10.0, max(0.0, queue_ratio)) * 100))
+        bypass_occ_pct = int(round(min(1.0, max(0.0, bypass_occ)) * 100))
+
         cot_steps = [
-            f"1. 【态势感知】监测到走廊主断面 [{bottleneck_edge}] 平均车速降至 {speed_kmh} km/h，占有率 {int(occupancy*100)}%。",
-            f"2. 【空间排队】当前排队长度 {queue_m} 米，占路段库容比 {int(queue_ratio*100)}%，{'已越过' if queue_ratio >= 0.75 else '尚未触及'}回溢警戒线 (75%)。",
+            f"1. 【态势感知】监测到走廊主断面 [{bottleneck_edge}] 平均车速降至 {round(speed_kmh, 1)} km/h，占有率 {occ_pct}%。",
+            f"2. 【空间排队】当前排队长度 {round(queue_m, 1)} 米，占路段库容比 {queue_ratio_pct}%，{'已越过' if queue_ratio >= 0.75 else '尚未触及'}回溢警戒线 (75%)。",
             f"3. 【成因归因】路段设计通行能力为 3 车道 (5400 pcu/h)，突发降速与排队激增表明存在【突发占道/瓶颈车道受阻】叠加【高峰车流集中汇聚】。",
             f"4. 【蔓延风险】按当前排队增速推演，上游交叉口存在被回溢车流锁死的风险。",
-            f"5. 【旁路核查】平行分流通道当前占有率 {int(bypass_occ*100)}%，{'具备' if bypass_occ < 0.75 else '不具备'}实施动态诱导分流的备用容量。",
+            f"5. 【旁路核查】平行分流通道当前占有率 {bypass_occ_pct}%，{'具备' if bypass_occ < 0.75 else '不具备'}实施动态诱导分流的备用容量。",
         ]
         return {
             "severity_level": (
@@ -282,14 +322,15 @@ class TrafficDecisionAgent:
                              configured or the model call fails, and honestly labelled
                              via `reasoning_mode` in the returned payload.
         """
-        bottleneck_edge = traffic_state.get("bottleneck_edge", "J1_J2")
-        queue_m = float(traffic_state.get("queue_m", 165.0))
-        link_len = float(traffic_state.get("link_length_m", 300.0))
-        speed_kmh = float(traffic_state.get("speed_kmh", 8.2))
-        occupancy = float(traffic_state.get("occupancy", 0.82))
-        bypass_occ = float(traffic_state.get("bypass_occupancy", 0.28))
+        traffic_state = traffic_state or {}
+        bottleneck_edge = str(traffic_state.get("bottleneck_edge") or "J1_J2")
+        queue_m = _safe_float(traffic_state.get("queue_m"), default=165.0, min_val=0.0, max_val=10000.0)
+        link_len = _safe_float(traffic_state.get("link_length_m"), default=300.0, min_val=10.0, max_val=10000.0)
+        speed_kmh = _safe_float(traffic_state.get("speed_kmh"), default=8.2, min_val=0.0, max_val=200.0)
+        occupancy = _safe_float(traffic_state.get("occupancy"), default=0.82, min_val=0.0, max_val=1.0)
+        bypass_occ = _safe_float(traffic_state.get("bypass_occupancy"), default=0.28, min_val=0.0, max_val=1.0)
 
-        queue_ratio = queue_m / max(1.0, link_len)
+        queue_ratio = min(10.0, queue_m / max(1.0, link_len))
         fallback = self._diagnose_deterministic(
             bottleneck_edge, queue_m, link_len, speed_kmh, occupancy, bypass_occ, queue_ratio
         )
@@ -327,7 +368,7 @@ class TrafficDecisionAgent:
                     "spillback_risk": spillback,
                     "root_causes": causes,
                     "cot_reasoning": cot,
-                    "can_reroute": bool(payload.get("can_reroute", fallback["can_reroute"])),
+                    "can_reroute": _parse_bool(payload.get("can_reroute"), fallback["can_reroute"]),
                 }
             else:
                 # Model responded, but the schema was incomplete -> degrade, don't guess.
@@ -377,9 +418,19 @@ class TrafficDecisionAgent:
             "green_wave": False,
         }
 
+        reroute_ratio = float(reroute_plan.get("diversion_ratio", 0.0) or 0.0)
+        reroute_pct = int(round(reroute_ratio * 100))
+
+        if reroute_pct > 0:
+            spatial_rationale = f"空域分流：上游 VMS 动态诱导 {reroute_pct}% 车辆走北部平行旁路，削减瓶颈输入负荷；"
+            vms_desc = f" + 上游 VMS 动态诱导分流 {reroute_pct}% 至北部旁路"
+        else:
+            spatial_rationale = "空域控流：旁路已饱和或主路拥堵可控，动态诱导分流保持待命熔断，防止次生拥堵；"
+            vms_desc = " + 动态诱导分流待命熔断（0%）"
+
         default_rationale = [
             f"时域扩容：Webster 动态调优主路绿信比至 {round(arterial_green / max(1.0, plan['actual_cycle']) * 100, 1)}%，提升瓶颈断面放行效率；",
-            f"空域分流：上游 VMS 动态诱导 {int(reroute_plan['diversion_ratio'] * 100)}% 车辆走北部平行旁路，削减瓶颈输入负荷；",
+            spatial_rationale,
             f"走廊协同：J1-J3 干线实施动态绿波协调（相位差 {gw_plan['offsets']}s），防止二次启停与回溢蔓延。",
         ]
 
@@ -388,8 +439,7 @@ class TrafficDecisionAgent:
             "name": "方案 B：TrafficAgent-DSS 系统级协同调控 (推荐)",
             "description": (
                 f"时空协同控制：Webster 动态调优（周期 {plan['actual_cycle']}s）"
-                f" + J1-J3 双向绿波协调 + 上游 VMS 动态诱导分流 "
-                f"{int(reroute_plan['diversion_ratio']*100)}% 至北部旁路。"
+                f" + J1-J3 双向绿波协调{vms_desc}。"
             ),
             "cycle_length": plan["actual_cycle"],
             "green_split_arterial": arterial_green,
@@ -687,9 +737,9 @@ class TrafficDecisionAgent:
             summary[sc] = {}
             for m in metric_keys:
                 vals = [
-                    r["kpis"][sc][m]
+                    float(r["kpis"][sc][m])
                     for r in batch_results
-                    if sc in r.get("kpis", {}) and m in r.get("kpis", {}).get(sc, {})
+                    if sc in r.get("kpis", {}) and m in r.get("kpis", {}).get(sc, {}) and r["kpis"][sc][m] is not None
                 ]
                 if vals:
                     mean_v = float(np.mean(vals))
@@ -709,9 +759,9 @@ class TrafficDecisionAgent:
         b_improvements = {}
         for ck in comp_keys:
             vals = [
-                r["comparisons"]["strategy_b"][ck]
+                float(r["comparisons"]["strategy_b"][ck])
                 for r in batch_results
-                if "comparisons" in r and "strategy_b" in r["comparisons"] and ck in r["comparisons"]["strategy_b"]
+                if "comparisons" in r and "strategy_b" in r["comparisons"] and ck in r["comparisons"]["strategy_b"] and r["comparisons"]["strategy_b"][ck] is not None
             ]
             if vals:
                 mean_v = float(np.mean(vals))
@@ -768,6 +818,10 @@ class TrafficDecisionAgent:
         computation or simulation run. When data is missing the report says so
         explicitly instead of substituting an illustrative value.
         """
+        diagnosis = diagnosis or {}
+        strategies = strategies or {}
+        rollout_results = rollout_results or {}
+
         kpis = rollout_results.get("kpis") or {}
         comparisons = rollout_results.get("comparisons") or {}
         comp_b = comparisons.get("strategy_b")
@@ -870,7 +924,9 @@ class TrafficDecisionAgent:
         cycle_len = strat_b.get("cycle_length")
         green_split = strat_b.get("green_split_arterial")
         offsets = strat_b.get("green_wave_offsets") or []
-        reroute_pct = int(round(strat_b.get("reroute_ratio", 0.0) * 100))
+        raw_reroute = strat_b.get("reroute_ratio")
+        reroute_val = float(raw_reroute) if raw_reroute is not None else 0.0
+        reroute_pct = int(round(reroute_val * 100))
         vms_msg = strat_b.get("vms_advisory") or "（未生成诱导文案）"
         risk_msg = strat_b.get("risk_warning") or "（未生成风险提示）"
         green_wave_active = bool(strat_b.get("green_wave"))
@@ -908,6 +964,24 @@ class TrafficDecisionAgent:
         else:
             evidence_block = "- 本次未采集到控制指令下发记录。"
 
+        raw_causes = diagnosis.get("root_causes")
+        if isinstance(raw_causes, list):
+            causes_list = [str(rc) for rc in raw_causes if rc is not None]
+        elif raw_causes is not None:
+            causes_list = [str(raw_causes)]
+        else:
+            causes_list = []
+        causes_text = chr(10).join(f"  - {rc}" for rc in causes_list) if causes_list else "  - （未获得归因结果）"
+
+        raw_cot = diagnosis.get("cot_reasoning")
+        if isinstance(raw_cot, list):
+            cot_list = [str(step) for step in raw_cot if step is not None]
+        elif raw_cot is not None:
+            cot_list = [str(raw_cot)]
+        else:
+            cot_list = []
+        cot_text = chr(10).join(f"  > {step}" for step in cot_list) if cot_list else "  > （未获得推理过程）"
+
         return f"""# 城市交通拥堵治理辅助决策建议简报 (Decision Briefing)
 
 **报告编号**：`DSS-2026-EXP-{int(os.getpid())}`  
@@ -936,9 +1010,9 @@ class TrafficDecisionAgent:
 - **拥堵瓶颈断面**：走廊核心路段 `{diagnosis.get('bottleneck_location', '—')}`
 - **警情等级**：**{diagnosis.get('severity_level', '—')}**（死锁风险度：{diagnosis.get('spillback_risk', '—')}）
 - **主要诱因归结**：
-{chr(10).join(f"  - {rc}" for rc in diagnosis.get('root_causes', [])) or "  - （未获得归因结果）"}
+{causes_text}
 - **智能体思维链 (CoT 推理过程)**：
-{chr(10).join(f"  > {step}" for step in diagnosis.get('cot_reasoning', [])) or "  > （未获得推理过程）"}
+{cot_text}
 
 ---
 

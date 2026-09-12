@@ -272,7 +272,82 @@ class TestWebAPI(unittest.TestCase):
             self.assertIn("SUMO binary missing", data["fallback_reason"])
             self.assertEqual(data["sample_size"], 2)
 
+    def test_strategies_endpoint_invalid_payload_returns_422(self):
+        """Tests that invalid diagnosis payload to /api/strategies returns HTTP 422."""
+        response = self.client.post("/api/strategies", json={"diagnosis": "invalid_not_a_dict"})
+        self.assertEqual(response.status_code, 422)
+
+    def test_report_export_invalid_kpis_returns_422(self):
+        """Tests that malformed kpis structure in rollout_data returns HTTP 422."""
+        invalid_payload = {
+            "rollout_data": {
+                "kpis": "invalid_string_instead_of_dict"
+            }
+        }
+        response = self.client.post("/api/report/export", json=invalid_payload)
+        self.assertEqual(response.status_code, 422)
+
+    def test_report_download_post_invalid_kpis_returns_422(self):
+        """Tests that malformed kpis in POST /api/report/download returns HTTP 422."""
+        invalid_payload = {
+            "rollout_data": {
+                "kpis": 12345
+            }
+        }
+        response = self.client.post("/api/report/download", json=invalid_payload)
+        self.assertEqual(response.status_code, 422)
+
+    def test_rollout_endpoint_sumo_failure_fallback_200(self):
+        """Tests that /api/rollout gracefully falls back when physical sandbox execution fails."""
+        from unittest.mock import patch
+        with patch("src.web.app.agent.execute_what_if_rollout", side_effect=RuntimeError("SUMO process deadlocked")):
+            payload = {
+                "duration": 600,
+                "incident_start": 150,
+                "incident_end": 420,
+                "run_physical_sandbox": True
+            }
+            response = self.client.post("/api/rollout", json=payload)
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertTrue(data["success"])
+            self.assertEqual(data["execution_mode"], "calibrated_empirical_fallback")
+            self.assertIn("fallback_reason", data)
+            self.assertIn("SUMO process deadlocked", data["fallback_reason"])
+            self.assertIn("kpis", data)
+
+    def test_decide_endpoint_one_stop(self):
+        """Tests POST /api/decide executes full end-to-end diagnosis, formulation, rollout, and report."""
+        # Test with empty body (default state)
+        res = self.client.post("/api/decide", json={})
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(data["success"])
+        self.assertIn("traffic_state", data)
+        self.assertIn("diagnosis", data)
+        self.assertIn("strategies", data)
+        self.assertIn("rollout", data)
+        self.assertIn("report_markdown", data)
+        self.assertIn("城市交通拥堵治理辅助决策建议简报", data["report_markdown"])
+
+        # Test with custom traffic state
+        custom_payload = {
+            "traffic_state": {
+                "bottleneck_edge": "East_Corridor_Ramp",
+                "queue_m": 180.0,
+                "speed_kmh": 12.0,
+                "occupancy": 0.75
+            },
+            "run_physical_sandbox": False
+        }
+        res_custom = self.client.post("/api/decide", json=custom_payload)
+        self.assertEqual(res_custom.status_code, 200)
+        data_custom = res_custom.json()
+        self.assertTrue(data_custom["success"])
+        self.assertEqual(data_custom["diagnosis"]["bottleneck_location"], "East_Corridor_Ramp")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

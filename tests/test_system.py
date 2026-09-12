@@ -17,7 +17,9 @@ from src.tools.webster import WebsterSignalOptimizer
 from src.tools.green_wave import GreenWaveCoordinator
 from src.tools.rerouting import DynamicReroutingAllocator
 from src.tools.evaluator import PerformanceEvaluator
-from src.agents.traffic_agent import TrafficDecisionAgent
+from src.agents.traffic_agent import TrafficDecisionAgent, _parse_bool
+from src.simulation.sumo_sandbox import SumoSimulationSandbox
+from src.agents.llm_client import LLMReasoningClient
 
 
 class TestTrafficAgentDSS(unittest.TestCase):
@@ -619,6 +621,186 @@ class TestTrafficAgentDSS(unittest.TestCase):
         baseline_radar = PerformanceEvaluator.baseline_radar_scores()
         for dim, score in baseline_radar.items():
             self.assertEqual(score, 50.0)
+
+    def test_webster_split_rounding_residual_compensation(self):
+        """Tests that rounding residual is strictly absorbed so sum(green_splits) + L == C."""
+        res = self.webster.compute_timing(
+            phase_flows=[350.0, 350.0, 350.0],
+            phase_lanes=[2, 2, 2],
+        )
+        self.assertAlmostEqual(sum(res["green_splits"]) + res["total_lost_time"], res["optimal_cycle"], places=2)
+        self.assertIsInstance(res["optimal_cycle"], float)
+
+    def test_webster_zero_and_negative_saturation_flow_guard(self):
+        """Validates that zero and negative saturation flows are clamped to safe values."""
+        w_zero = WebsterSignalOptimizer(saturation_flow_per_lane=0.0)
+        self.assertGreater(w_zero.s_per_lane, 0.0)
+        res_zero = w_zero.compute_timing(phase_flows=[300.0, 300.0], phase_lanes=[1, 1])
+        self.assertIn("optimal_cycle", res_zero)
+
+        w_neg = WebsterSignalOptimizer(saturation_flow_per_lane=-500.0)
+        self.assertGreater(w_neg.s_per_lane, 0.0)
+
+    def test_green_wave_pure_reverse_progression(self):
+        """Tests that weight_forward == 0.0 computes reverse progression offsets correctly."""
+        res_rev = self.green_wave.compute_offsets(
+            intersection_distances=[300.0, 300.0],
+            cycle_length=90.0,
+            green_splits_arterial=[45.0, 45.0, 45.0],
+            progression_speed=13.89,
+            bidirectional=True,
+            weight_forward=0.0,
+        )
+        self.assertEqual(res_rev["offsets"][0], 0.0)
+        # Travel time ~21.6s -> reverse link step = 90.0 - 21.6 = 68.4s
+        self.assertEqual(res_rev["offsets"][1], 68.4)
+        self.assertGreater(res_rev["bandwidth_reverse_seconds"], 0.0)
+
+    def test_green_wave_speed_and_distance_guards(self):
+        """Tests defensive guards for non-positive progression speeds and negative distances."""
+        res = self.green_wave.compute_offsets(
+            intersection_distances=[-100.0, 200.0],
+            cycle_length=60.0,
+            green_splits_arterial=[30.0, 30.0, 30.0],
+            progression_speed=0.0,
+        )
+        self.assertTrue(all(tt >= 0 for tt in res["travel_times"]))
+        self.assertEqual(res["travel_times"][0], 0.0)
+
+    def test_rerouting_zero_severity_floor_not_triggered(self):
+        """Tests that uncongested road beneath thresholds does not trigger false 10% diversion."""
+        res = self.rerouter.calculate_diversion(
+            bottleneck_queue_meters=180.0,
+            bottleneck_link_length=300.0,
+            bottleneck_occupancy=0.65,
+            upstream_flow_vph=1200.0,
+            bypass_current_occupancy=0.30,
+            bypass_spare_capacity_vph=1000.0,
+        )
+        self.assertFalse(res["need_diversion"])
+        self.assertEqual(res["diversion_ratio"], 0.0)
+        self.assertNotIn("严重拥堵", res["vms_advisory"])
+
+    def test_rerouting_zero_upstream_flow(self):
+        """Tests that zero upstream volume results in zero diversion and no advisories."""
+        res = self.rerouter.calculate_diversion(
+            bottleneck_queue_meters=250.0,
+            bottleneck_link_length=300.0,
+            bottleneck_occupancy=0.85,
+            upstream_flow_vph=0.0,
+            bypass_current_occupancy=0.20,
+            bypass_spare_capacity_vph=1500.0,
+        )
+        self.assertFalse(res["need_diversion"])
+        self.assertEqual(res["diversion_ratio"], 0.0)
+
+    def test_rerouting_respects_custom_queue_threshold(self):
+        """Tests that custom spillback_queue_ratio in Condition 1 is strictly respected."""
+        custom_rerouter = DynamicReroutingAllocator(spillback_queue_ratio=0.60)
+        # queue ratio = 165 / 300 = 0.55 (< 0.60 custom threshold)
+        res = custom_rerouter.calculate_diversion(
+            bottleneck_queue_meters=165.0,
+            bottleneck_link_length=300.0,
+            bottleneck_occupancy=0.60,
+            upstream_flow_vph=1200.0,
+            bypass_current_occupancy=0.20,
+            bypass_spare_capacity_vph=1500.0,
+        )
+        self.assertFalse(res["need_diversion"])
+        self.assertEqual(res["diversion_ratio"], 0.0)
+
+    def test_evaluator_handles_explicit_none_values(self):
+        """Tests that PerformanceEvaluator survives explicit None in all metric fields."""
+        raw_none = {
+            "vehicle_delays": [None, 25.0],
+            "queue_lengths": [None, 50.0],
+            "vehicle_speeds": None,
+            "total_co2_mg": None,
+            "total_fuel_mg": None,
+            "completed_trips": None,
+            "simulation_duration": None,
+        }
+        kpi = self.evaluator.compute_summary_kpi(raw_none)
+        self.assertEqual(kpi["avg_delay_s"], 25.0)
+        self.assertEqual(kpi["max_queue_m"], 50.0)
+        self.assertEqual(kpi["co2_emissions_kg"], 0.0)
+        self.assertEqual(kpi["fuel_liters"], 0.0)
+
+    def test_evaluator_compare_schemes_with_none_kpis(self):
+        """Tests that compare_schemes handles dictionaries containing None KPI values."""
+        base_none = {"avg_delay_s": None, "max_queue_m": 100.0, "avg_speed_kmh": None}
+        strat_none = {"avg_delay_s": 30.0, "max_queue_m": None, "avg_speed_kmh": 25.0}
+        comp = self.evaluator.compare_schemes(base_none, strat_none)
+        self.assertIn("delay_improvement_pct", comp)
+        self.assertIn("radar_scores", comp)
+
+    def test_sandbox_missing_sumo_binary_raises_file_not_found(self):
+        """Tests that an invalid/missing SUMO binary path raises FileNotFoundError cleanly."""
+        sandbox = SumoSimulationSandbox()
+        sandbox.sumo_bin = "/nonexistent/sumo_executable_bin"
+        with self.assertRaises(FileNotFoundError):
+            sandbox.run_simulation()
+
+    def test_agent_diagnose_handles_none_and_inf_values(self):
+        """Tests that TrafficDecisionAgent handles None and Infinite inputs gracefully."""
+        raw_state = {
+            "queue_m": None,
+            "link_length_m": float("inf"),
+            "speed_kmh": None,
+            "occupancy": 1e20,
+            "bypass_occupancy": None,
+        }
+        diag = self.agent.diagnose_bottleneck(raw_state)
+        self.assertIn("severity_level", diag)
+        self.assertIn("cot_reasoning", diag)
+
+    def test_strategy_b_description_when_diversion_is_zero(self):
+        """Tests that Strategy B description and rationale avoid claiming 0% diversion reduction."""
+        free_state = {
+            "bottleneck_edge": "J1_J2",
+            "queue_m": 10.0,
+            "link_length_m": 300.0,
+            "speed_kmh": 45.0,
+            "occupancy": 0.20,
+            "bypass_occupancy": 0.15,
+        }
+        diag = self.agent.diagnose_bottleneck(free_state)
+        strats = self.agent.formulate_candidate_strategies(diag)
+        strat_b = strats["strategy_b"]
+        self.assertNotIn("削减瓶颈输入负荷", strat_b["description"])
+        self.assertNotIn("诱导 0%", strat_b["description"])
+
+    def test_generate_decision_report_guards_none_fields(self):
+        """Tests that generate_decision_report survives None in reroute_ratio, causes, and CoT."""
+        diag = {
+            "bottleneck_location": "J1_J2",
+            "severity_level": "中度",
+            "spillback_risk": "低",
+            "root_causes": None,
+            "cot_reasoning": None,
+        }
+        strats = {
+            "strategy_b": {
+                "cycle_length": 60.0,
+                "green_split_arterial": 30.0,
+                "green_wave_offsets": [0.0, 15.0],
+                "reroute_ratio": None,
+                "green_wave": True,
+            }
+        }
+        report = self.agent.generate_decision_report(diag, strats, None)
+        self.assertIn("决策建议简报", report)
+        self.assertIn("未获得归因结果", report)
+
+    def test_llm_client_json_extraction_and_bool_parsing(self):
+        """Tests LLM JSON markdown block extraction and case-insensitive matching."""
+        text = 'Some notes\n```JSON\n{"status": "ok", "can_reroute": "false"}\n```\nDone.'
+        extracted = LLMReasoningClient._extract_json(text)
+        self.assertIsNotNone(extracted)
+        self.assertEqual(extracted.get("status"), "ok")
+        self.assertFalse(_parse_bool("false"))
+        self.assertTrue(_parse_bool("True"))
+        self.assertFalse(_parse_bool(None, default=False))
 
 
 if __name__ == "__main__":

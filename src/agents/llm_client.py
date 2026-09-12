@@ -58,9 +58,9 @@ class LLMReasoningClient:
         ).strip() or None
         self.model = (model or os.getenv("LLM_MODEL") or "gpt-4o-mini").strip()
         try:
-            self.timeout = float(os.getenv("LLM_TIMEOUT", str(timeout)))
+            self.timeout = max(1.0, float(os.getenv("LLM_TIMEOUT", str(timeout))))
         except ValueError:
-            self.timeout = timeout
+            self.timeout = max(1.0, float(timeout))
         self.last_error: Optional[str] = None
 
     # ------------------------------------------------------------------ #
@@ -101,7 +101,7 @@ class LLMReasoningClient:
 
         raw = text.strip()
 
-        fenced = re.search(r"```(?:json)?\s*(.+?)```", raw, re.S)
+        fenced = re.search(r"```(?:json)?\s*(.+?)```", raw, re.DOTALL | re.IGNORECASE)
         if fenced:
             raw = fenced.group(1).strip()
 

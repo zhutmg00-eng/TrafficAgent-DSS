@@ -19,9 +19,9 @@ class GreenWaveCoordinator:
         min_progression_speed: float = 9.72,      # ~35 km/h
         max_progression_speed: float = 16.67,     # ~60 km/h
     ):
-        self.default_speed = default_progression_speed
-        self.min_speed = min_progression_speed
-        self.max_speed = max_progression_speed
+        self.default_speed = max(1.0, float(default_progression_speed))
+        self.min_speed = max(0.1, float(min_progression_speed))
+        self.max_speed = max(self.min_speed, float(max_progression_speed))
 
     def compute_offsets(
         self,
@@ -38,7 +38,7 @@ class GreenWaveCoordinator:
         """
         if progression_speed is None:
             progression_speed = self.default_speed
-        progression_speed = max(self.min_speed, min(self.max_speed, progression_speed))
+        progression_speed = max(1.0, max(self.min_speed, min(self.max_speed, float(progression_speed))))
 
         num_nodes = len(intersection_distances) + 1
         if len(green_splits_arterial) != num_nodes:
@@ -47,14 +47,15 @@ class GreenWaveCoordinator:
         safe_cycle = max(1.0, cycle_length)
         weight_forward = max(0.0, min(1.0, weight_forward))
 
-        # 1. Forward travel times
-        travel_times = [d / progression_speed for d in intersection_distances]
+        # 1. Forward travel times with negative distance guards
+        travel_times = [max(0.0, float(d)) / progression_speed for d in intersection_distances]
 
         # 2. Cumulative offsets
-        if bidirectional and 0.0 < weight_forward < 1.0:
-            # In bidirectional coordination, blend forward progression (+tt) and
-            # reverse progression (-tt = C - tt) across each link.
+        if (bidirectional and 0.0 <= weight_forward < 1.0) or (not bidirectional and weight_forward == 0.0):
+            # In bidirectional coordination (or pure reverse progression when weight_forward == 0.0),
+            # blend forward progression (+tt) and reverse progression (-tt = C - tt) across each link.
             # For balanced two-way progression (weight 0.5), this yields the classical alternate system (0, C/2, 0, C/2).
+            # When weight_forward == 0.0, this strictly executes reverse progression.
             offsets = [0.0]
             for tt in travel_times:
                 ideal_forward = tt % safe_cycle
@@ -63,7 +64,7 @@ class GreenWaveCoordinator:
                 next_offset = (offsets[-1] + link_step) % safe_cycle
                 offsets.append(round(next_offset, 1))
         else:
-            # Unidirectional progression
+            # Unidirectional forward progression
             offsets = [0.0]
             for tt in travel_times:
                 next_offset = (offsets[-1] + tt) % safe_cycle
@@ -82,9 +83,12 @@ class GreenWaveCoordinator:
             bandwidth_ratio = round((bandwidth_forward / cycle_length) * 100.0, 1)
 
             # Reverse direction theoretical bandwidth under progression tuning
-            if bidirectional and weight_forward < 1.0:
+            if (bidirectional or weight_forward == 0.0) and weight_forward < 1.0:
                 reverse_share = 1.0 - weight_forward
-                bandwidth_reverse = max(0.0, round(bandwidth_forward * min(1.0, reverse_share / max(1e-6, weight_forward)), 1))
+                if weight_forward <= 0.0:
+                    bandwidth_reverse = round(bandwidth_forward, 1)
+                else:
+                    bandwidth_reverse = max(0.0, round(bandwidth_forward * min(1.0, reverse_share / max(1e-6, weight_forward)), 1))
             else:
                 bandwidth_reverse = 0.0
 

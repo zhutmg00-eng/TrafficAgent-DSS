@@ -21,19 +21,47 @@ class PerformanceEvaluator:
     def compute_summary_kpi(raw_stats: Dict[str, Any]) -> Dict[str, float]:
         """
         Summarizes raw simulation time-step metrics into standard KPIs.
+        Safely guards against explicit None values and empty list metrics.
         """
-        delays = raw_stats.get("vehicle_delays", [0.0])
-        queues = raw_stats.get("queue_lengths", [0.0])
+        delays = raw_stats.get("vehicle_delays")
+        if delays is None:
+            delays = [0.0]
+        else:
+            delays = [float(d) for d in delays if d is not None]
+            if not delays:
+                delays = [0.0]
+
+        queues = raw_stats.get("queue_lengths")
+        if queues is None:
+            queues = [0.0]
+        else:
+            queues = [float(q) for q in queues if q is not None]
+            if not queues:
+                queues = [0.0]
+
         speeds = raw_stats.get("vehicle_speeds")
         if speeds is None and "bottleneck_speeds_kmh" in raw_stats:
-            speeds = [s / 3.6 for s in raw_stats["bottleneck_speeds_kmh"]]
+            bn_speeds = raw_stats.get("bottleneck_speeds_kmh")
+            if bn_speeds is not None:
+                speeds = [float(s) / 3.6 for s in bn_speeds if s is not None]
+        if speeds is not None:
+            speeds = [float(s) for s in speeds if s is not None]
         if not speeds:
             speeds = [10.0]
 
-        co2_mg = max(0.0, float(raw_stats.get("total_co2_mg", 0.0)))
-        fuel_mg = max(0.0, float(raw_stats.get("total_fuel_mg", raw_stats.get("total_fuel_ml", 0.0))))
-        completed_trips = max(0, int(raw_stats.get("completed_trips", 0)))
-        sim_duration_sec = max(1.0, float(raw_stats.get("simulation_duration", 600.0)))
+        raw_co2 = raw_stats.get("total_co2_mg")
+        co2_mg = max(0.0, float(raw_co2)) if raw_co2 is not None else 0.0
+
+        raw_fuel = raw_stats.get("total_fuel_mg")
+        if raw_fuel is None:
+            raw_fuel = raw_stats.get("total_fuel_ml")
+        fuel_mg = max(0.0, float(raw_fuel)) if raw_fuel is not None else 0.0
+
+        raw_trips = raw_stats.get("completed_trips")
+        completed_trips = max(0, int(raw_trips)) if raw_trips is not None else 0
+
+        raw_duration = raw_stats.get("simulation_duration")
+        sim_duration_sec = max(1.0, float(raw_duration)) if raw_duration is not None else 600.0
 
         avg_delay = float(np.mean(delays)) if len(delays) > 0 else 0.0
         max_queue = float(np.max(queues)) if len(queues) > 0 else 0.0
@@ -84,15 +112,15 @@ class PerformanceEvaluator:
                 return 0.0
             return round(((strat - base) / base) * 100.0, 1)
 
-        delay_improv = pct_reduction(baseline_kpi.get("avg_delay_s", 0.0), strategy_kpi.get("avg_delay_s", 0.0))
-        queue_improv = pct_reduction(baseline_kpi.get("max_queue_m", 0.0), strategy_kpi.get("max_queue_m", 0.0))
-        speed_improv = pct_increase(baseline_kpi.get("avg_speed_kmh", 0.0), strategy_kpi.get("avg_speed_kmh", 0.0))
-        throughput_improv = pct_increase(baseline_kpi.get("throughput_vph", 0.0), strategy_kpi.get("throughput_vph", 0.0))
-        variance_improv = pct_reduction(baseline_kpi.get("delay_variance", 0.0), strategy_kpi.get("delay_variance", 0.0))
-        co2_improv = pct_reduction(baseline_kpi.get("co2_emissions_kg", 0.0), strategy_kpi.get("co2_emissions_kg", 0.0))
+        delay_improv = pct_reduction(baseline_kpi.get("avg_delay_s") or 0.0, strategy_kpi.get("avg_delay_s") or 0.0)
+        queue_improv = pct_reduction(baseline_kpi.get("max_queue_m") or 0.0, strategy_kpi.get("max_queue_m") or 0.0)
+        speed_improv = pct_increase(baseline_kpi.get("avg_speed_kmh") or 0.0, strategy_kpi.get("avg_speed_kmh") or 0.0)
+        throughput_improv = pct_increase(baseline_kpi.get("throughput_vph") or 0.0, strategy_kpi.get("throughput_vph") or 0.0)
+        variance_improv = pct_reduction(baseline_kpi.get("delay_variance") or 0.0, strategy_kpi.get("delay_variance") or 0.0)
+        co2_improv = pct_reduction(baseline_kpi.get("co2_emissions_kg") or 0.0, strategy_kpi.get("co2_emissions_kg") or 0.0)
 
-        base_fuel = baseline_kpi.get("fuel_liters", baseline_kpi.get("fuel_consumption_kg", 0.0))
-        strat_fuel = strategy_kpi.get("fuel_liters", strategy_kpi.get("fuel_consumption_kg", 0.0))
+        base_fuel = baseline_kpi.get("fuel_liters") or baseline_kpi.get("fuel_consumption_kg") or 0.0
+        strat_fuel = strategy_kpi.get("fuel_liters") or strategy_kpi.get("fuel_consumption_kg") or 0.0
         fuel_improv = pct_reduction(base_fuel, strat_fuel)
 
         # Radar score normalized to [40, 98] for visualization

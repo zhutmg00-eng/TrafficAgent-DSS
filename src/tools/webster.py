@@ -24,13 +24,13 @@ class WebsterSignalOptimizer:
         yellow_time: float = 3.0,
         all_red_time: float = 1.0,
     ):
-        self.s_per_lane = saturation_flow_per_lane
-        self.lost_time_per_phase = lost_time_per_phase
-        self.min_cycle = min_cycle
-        self.max_cycle = max_cycle
-        self.min_green = min_green
-        self.yellow_time = yellow_time
-        self.all_red_time = all_red_time
+        self.s_per_lane = max(100.0, float(saturation_flow_per_lane))
+        self.lost_time_per_phase = max(0.0, float(lost_time_per_phase))
+        self.min_cycle = max(10.0, float(min_cycle))
+        self.max_cycle = max(self.min_cycle, float(max_cycle))
+        self.min_green = max(1.0, float(min_green))
+        self.yellow_time = max(0.0, float(yellow_time))
+        self.all_red_time = max(0.0, float(all_red_time))
 
     def compute_timing(
         self,
@@ -60,7 +60,7 @@ class WebsterSignalOptimizer:
         # 1. Calculate flow ratio y_i for each phase
         flow_ratios = []
         for q, lanes in zip(phase_flows, phase_lanes):
-            sat_flow = max(1, lanes) * self.s_per_lane
+            sat_flow = max(1.0, max(1, lanes) * self.s_per_lane)
             safe_q = max(0.0, float(q))
             y = max(0.01, safe_q / sat_flow)
             flow_ratios.append(y)
@@ -75,10 +75,10 @@ class WebsterSignalOptimizer:
         # Handle oversaturated condition (Y >= 0.95)
         if Y >= 0.95:
             # Over-saturated state: cap at max practical cycle to maximize capacity
-            optimal_cycle = max(min_practical_cycle, self.max_cycle)
+            optimal_cycle = float(max(min_practical_cycle, self.max_cycle))
         else:
             C_0 = (1.5 * total_lost_time + 5.0) / (1.0 - Y)
-            optimal_cycle = max(min_practical_cycle, min(self.max_cycle, round(C_0)))
+            optimal_cycle = float(max(min_practical_cycle, min(self.max_cycle, round(C_0))))
 
         # 3. Available effective green time
         available_green = optimal_cycle - total_lost_time
@@ -107,9 +107,15 @@ class WebsterSignalOptimizer:
 
         green_splits = [round(g, 1) for g in green_splits]
 
+        # Compensate rounding residual into the critical phase with the largest green time
+        residual = round(available_green - sum(green_splits), 1)
+        if green_splits and abs(residual) > 1e-4:
+            max_idx = max(range(len(green_splits)), key=lambda i: green_splits[i])
+            green_splits[max_idx] = round(green_splits[max_idx] + residual, 1)
+
         # Degree of saturation x_i = q_i / (s_i * (g_i / C))
         degree_of_saturation = [
-            round(max(0.0, float(q)) / (max(1, lanes) * self.s_per_lane * (max(0.1, g) / max(1.0, optimal_cycle))), 3)
+            round(max(0.0, float(q)) / (max(1.0, max(1, lanes) * self.s_per_lane) * (max(0.1, g) / max(1.0, optimal_cycle))), 3)
             for q, lanes, g in zip(phase_flows, phase_lanes, green_splits)
         ]
 

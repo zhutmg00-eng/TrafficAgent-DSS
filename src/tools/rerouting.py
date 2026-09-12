@@ -46,8 +46,18 @@ class DynamicReroutingAllocator:
 
         queue_ratio = bottleneck_queue_meters / bottleneck_link_length
 
+        # Safe guard: if upstream flow is zero or negative, no vehicles to divert
+        if upstream_flow_vph <= 0.0:
+            return {
+                "need_diversion": False,
+                "diversion_ratio": 0.0,
+                "diverted_flow_vph": 0.0,
+                "vms_advisory": "前方主干路通行顺畅，请按道行驶",
+                "risk_warning": "上游流量为0，无分流需求"
+            }
+
         # Condition 1: If bottleneck is healthy, zero diversion
-        if bottleneck_occupancy < self.occ_thresh and queue_ratio < 0.5:
+        if bottleneck_occupancy < self.occ_thresh and queue_ratio < self.queue_thresh:
             return {
                 "need_diversion": False,
                 "diversion_ratio": 0.0,
@@ -68,11 +78,22 @@ class DynamicReroutingAllocator:
 
         # Condition 3: Calculate required diversion to clear excess queue
         # Excess severity score [0.0, 1.0]
-        occ_excess = max(0.0, (bottleneck_occupancy - self.occ_thresh) / max(1e-6, 1.0 - self.occ_thresh))
-        queue_excess = max(0.0, (queue_ratio - self.queue_thresh) / max(1e-6, 1.0 - self.queue_thresh))
+        if self.occ_thresh >= 1.0:
+            occ_excess = 1.0 if bottleneck_occupancy >= self.occ_thresh else 0.0
+        else:
+            occ_excess = max(0.0, min(1.0, (bottleneck_occupancy - self.occ_thresh) / max(1e-6, 1.0 - self.occ_thresh)))
+
+        if self.queue_thresh >= 1.0:
+            queue_excess = 1.0 if queue_ratio >= self.queue_thresh else 0.0
+        else:
+            queue_excess = max(0.0, min(1.0, (queue_ratio - self.queue_thresh) / max(1e-6, 1.0 - self.queue_thresh)))
+
         severity = 0.5 * occ_excess + 0.5 * queue_excess
 
-        target_diversion = min(self.max_diversion, max(0.10, severity * self.max_diversion))
+        if severity <= 0.0:
+            target_diversion = 0.0
+        else:
+            target_diversion = min(self.max_diversion, max(0.10, severity * self.max_diversion))
 
         # Constrain by bypass spare capacity
         max_possible_by_bypass = bypass_spare_capacity_vph / max(1.0, upstream_flow_vph)
@@ -81,10 +102,13 @@ class DynamicReroutingAllocator:
 
         diverted_vph = round(upstream_flow_vph * final_diversion)
 
-        vms_text = (
-            f"【交通诱导】前方主干路严重拥堵，排队{int(bottleneck_queue_meters)}米。"
-            f"建议非直通车辆右转经旁路绕行，预计节省通行时间8-12分钟。"
-        )
+        if final_diversion > 0.0:
+            vms_text = (
+                f"【交通诱导】前方主干路严重拥堵，排队{int(bottleneck_queue_meters)}米。"
+                f"建议非直通车辆右转经旁路绕行，预计节省通行时间8-12分钟。"
+            )
+        else:
+            vms_text = "前方主干路通行顺畅，请按道行驶"
 
         return {
             "need_diversion": final_diversion > 0.0,

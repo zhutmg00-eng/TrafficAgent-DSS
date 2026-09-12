@@ -59,11 +59,15 @@ INDEX_HTML_PATH = STATIC_DIR / "index.html"
 # Pydantic Request & Response Models
 class TrafficStateInput(BaseModel):
     bottleneck_edge: str = Field(default="J1_J2 (主干线合流段)", description="瓶颈路段标识")
-    queue_m: float = Field(default=165.0, ge=0.0, description="瓶颈处当前排队长度 (米)")
-    link_length_m: float = Field(default=300.0, gt=0.0, description="瓶颈路段总长度 (米)")
-    speed_kmh: float = Field(default=8.2, ge=0.0, description="瓶颈瞬时车速 (km/h)")
+    queue_m: float = Field(default=165.0, ge=0.0, le=10000.0, description="瓶颈处当前排队长度 (米)")
+    link_length_m: float = Field(default=300.0, gt=0.0, le=10000.0, description="瓶颈路段总长度 (米)")
+    speed_kmh: float = Field(default=8.2, ge=0.0, le=200.0, description="瓶颈瞬时车速 (km/h)")
     occupancy: float = Field(default=0.82, ge=0.0, le=1.0, description="断面车道占有率")
     bypass_occupancy: float = Field(default=0.28, ge=0.0, le=1.0, description="平行旁路车道占有率")
+
+
+class StrategyFormulationInput(BaseModel):
+    diagnosis: Optional[Dict[str, Any]] = Field(default=None, description="智能体态势感知与归因诊断输出")
 
 
 class RolloutConfigInput(BaseModel):
@@ -96,6 +100,14 @@ class MultiSeedEvaluationInput(BaseModel):
 
     @model_validator(mode="after")
     def validate_batch_window(self):
+        if self.seeds is not None:
+            if len(self.seeds) == 0:
+                raise ValueError("seeds 列表不能为空")
+            if len(self.seeds) > 100:
+                raise ValueError("seeds 列表最多允许 100 个随机种子")
+            for s in self.seeds:
+                if s is None or s < 0:
+                    raise ValueError(f"种子必须为非负整数，收到: {s}")
         if self.incident_start >= self.incident_end:
             raise ValueError(f"事故开始时间 ({self.incident_start}s) 必须早于事故撤离时间 ({self.incident_end}s)")
         if self.incident_end > self.duration:
@@ -107,6 +119,21 @@ class ReportExportInput(BaseModel):
     diagnosis: Optional[Dict[str, Any]] = None
     strategies: Optional[Dict[str, Any]] = None
     rollout_data: Optional[Dict[str, Any]] = None
+
+    @model_validator(mode="after")
+    def validate_structures(self):
+        if self.rollout_data is not None:
+            if not isinstance(self.rollout_data, dict):
+                raise ValueError("rollout_data 必须为字典结构")
+            kpis = self.rollout_data.get("kpis")
+            if kpis is not None and not isinstance(kpis, dict):
+                raise ValueError("rollout_data 中的 kpis 必须为字典结构")
+        return self
+
+
+class DecisionPipelineInput(BaseModel):
+    traffic_state: Optional[TrafficStateInput] = None
+    rollout_config: Optional[RolloutConfigInput] = None
 
 
 # Default baseline calibrated datasets
@@ -353,19 +380,21 @@ async def diagnose_traffic(state: Optional[TrafficStateInput] = None):
 
 
 @app.post("/api/strategies", summary="候选治理预案构想与交通工程工具求解")
-async def generate_strategies(payload: Optional[Dict[str, Any]] = None):
+async def generate_strategies(payload: Optional[StrategyFormulationInput] = None):
     """
     Computes candidate governance strategies:
     - Baseline: Do-Nothing
     - Strategy A: Webster Local Adaptive Timing
     - Strategy B: TrafficAgent-DSS Spatio-Temporal Coordinated Control
     """
+    diag = payload.diagnosis if payload else None
+    if diag is not None and not isinstance(diag, dict):
+        raise HTTPException(
+            status_code=422,
+            detail="diagnosis 字段必须为合法的字典对象"
+        )
     try:
-        # If diagnosis is provided in payload, use it; otherwise run default diagnosis first
-        diag = None
-        if payload and "diagnosis" in payload:
-            diag = payload["diagnosis"]
-        else:
+        if not diag:
             default_state = {
                 "bottleneck_edge": "J1_J2 (主干线合流段)",
                 "queue_m": 165.0,
@@ -381,6 +410,13 @@ async def generate_strategies(payload: Optional[Dict[str, Any]] = None):
             "success": True,
             "strategies": strategies
         }
+    except HTTPException:
+        raise
+    except (ValueError, TypeError) as ve:
+        raise HTTPException(
+            status_code=422,
+            detail=f"参数校验失败: {str(ve)}"
+        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -656,7 +692,6 @@ async def export_decision_report(data: Optional[ReportExportInput] = None):
     Generates standardized Markdown decision support briefing for operators and reviewers.
     """
     try:
-        # Prepare inputs
         default_state = {
             "bottleneck_edge": "J1_J2 (主干线合流段)",
             "queue_m": 165.0,
@@ -677,6 +712,13 @@ async def export_decision_report(data: Optional[ReportExportInput] = None):
             "filename": "TrafficAgent_Decision_Briefing.md",
             "length": len(report_md)
         }
+    except HTTPException:
+        raise
+    except (ValueError, TypeError) as ve:
+        raise HTTPException(
+            status_code=422,
+            detail=f"参数校验失败: {str(ve)}"
+        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -689,26 +731,32 @@ async def download_decision_report():
     """
     Directly returns Markdown decision briefing file as a download stream.
     """
-    default_state = {
-        "bottleneck_edge": "J1_J2 (主干线合流段)",
-        "queue_m": 165.0,
-        "link_length_m": 300.0,
-        "speed_kmh": 8.2,
-        "occupancy": 0.82,
-        "bypass_occupancy": 0.28
-    }
-    diag = agent.diagnose_bottleneck(default_state)
-    strat = agent.formulate_candidate_strategies(diag)
-    rollout = get_calibrated_rollout_data()
-    report_md = agent.generate_decision_report(diag, strat, rollout)
-
-    return Response(
-        content=report_md.encode("utf-8"),
-        media_type="text/markdown; charset=utf-8",
-        headers={
-            "Content-Disposition": 'attachment; filename="TrafficAgent_Decision_Briefing.md"'
+    try:
+        default_state = {
+            "bottleneck_edge": "J1_J2 (主干线合流段)",
+            "queue_m": 165.0,
+            "link_length_m": 300.0,
+            "speed_kmh": 8.2,
+            "occupancy": 0.82,
+            "bypass_occupancy": 0.28
         }
-    )
+        diag = agent.diagnose_bottleneck(default_state)
+        strat = agent.formulate_candidate_strategies(diag)
+        rollout = get_calibrated_rollout_data()
+        report_md = agent.generate_decision_report(diag, strat, rollout)
+
+        return Response(
+            content=report_md.encode("utf-8"),
+            media_type="text/markdown; charset=utf-8",
+            headers={
+                "Content-Disposition": 'attachment; filename="TrafficAgent_Decision_Briefing.md"'
+            }
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"简报下载流生成失败: {str(e)}"
+        )
 
 
 @app.post("/api/report/download", summary="自定义下载 Markdown 格式决策简报 (POST)")
@@ -716,26 +764,79 @@ async def download_custom_decision_report(data: Optional[ReportExportInput] = No
     """
     Returns customized Markdown decision briefing file stream based on current session state.
     """
-    default_state = {
-        "bottleneck_edge": "J1_J2 (主干线合流段)",
-        "queue_m": 165.0,
-        "link_length_m": 300.0,
-        "speed_kmh": 8.2,
-        "occupancy": 0.82,
-        "bypass_occupancy": 0.28
-    }
-    diag = data.diagnosis if data and data.diagnosis else agent.diagnose_bottleneck(default_state)
-    strat = data.strategies if data and data.strategies else agent.formulate_candidate_strategies(diag)
-    rollout = data.rollout_data if data and data.rollout_data else get_calibrated_rollout_data()
-    report_md = agent.generate_decision_report(diag, strat, rollout)
-
-    return Response(
-        content=report_md.encode("utf-8"),
-        media_type="text/markdown; charset=utf-8",
-        headers={
-            "Content-Disposition": 'attachment; filename="TrafficAgent_Decision_Briefing.md"'
+    try:
+        default_state = {
+            "bottleneck_edge": "J1_J2 (主干线合流段)",
+            "queue_m": 165.0,
+            "link_length_m": 300.0,
+            "speed_kmh": 8.2,
+            "occupancy": 0.82,
+            "bypass_occupancy": 0.28
         }
-    )
+        diag = data.diagnosis if data and data.diagnosis else agent.diagnose_bottleneck(default_state)
+        strat = data.strategies if data and data.strategies else agent.formulate_candidate_strategies(diag)
+        rollout = data.rollout_data if data and data.rollout_data else get_calibrated_rollout_data()
+        report_md = agent.generate_decision_report(diag, strat, rollout)
+
+        return Response(
+            content=report_md.encode("utf-8"),
+            media_type="text/markdown; charset=utf-8",
+            headers={
+                "Content-Disposition": 'attachment; filename="TrafficAgent_Decision_Briefing.md"'
+            }
+        )
+    except HTTPException:
+        raise
+    except (ValueError, TypeError) as ve:
+        raise HTTPException(
+            status_code=422,
+            detail=f"参数校验失败: {str(ve)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"简报下载流生成失败: {str(e)}"
+        )
+
+
+@app.post("/api/decide", summary="一站式端到端协同决策流水线")
+async def execute_full_decision_pipeline(payload: Optional[DecisionPipelineInput] = None):
+    """
+    One-stop pipeline: diagnosis -> strategies -> rollout -> decision brief.
+    Provides complete DSS result in a single request with graceful degradation.
+    """
+    try:
+        t_state = payload.traffic_state if payload and payload.traffic_state else TrafficStateInput()
+        state_dict = t_state.model_dump()
+        diagnosis = agent.diagnose_bottleneck(state_dict)
+        strategies = agent.formulate_candidate_strategies(diagnosis)
+
+        r_cfg = payload.rollout_config if payload and payload.rollout_config else RolloutConfigInput()
+        rollout_res = await execute_rollout(r_cfg)
+
+        report_md = agent.generate_decision_report(diagnosis, strategies, rollout_res)
+
+        return {
+            "success": True,
+            "traffic_state": state_dict,
+            "diagnosis": diagnosis,
+            "strategies": strategies,
+            "rollout": rollout_res,
+            "report_markdown": report_md,
+            "execution_mode": rollout_res.get("execution_mode", "calibrated_empirical_benchmark"),
+        }
+    except HTTPException:
+        raise
+    except (ValueError, TypeError) as ve:
+        raise HTTPException(
+            status_code=422,
+            detail=f"流水线参数校验失败: {str(ve)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Decision pipeline error: {str(e)}"
+        )
 
 
 @app.get("/api/baseline-data", summary="获取标定基准推演与全套指标数据集")

@@ -9,6 +9,90 @@
 
 ---
 
+## [2026-09-12] 全核心模块缺陷修复与系统级鲁棒性加固 (Tools / Simulation / Agents / Web)
+
+**改进范围**：覆盖全系统 4 大核心模块（`src/tools/`、`src/simulation/`、`src/agents/`、`src/web/`）的潜在缺陷治理、异常输入防御、浮点与边界安全加固、TraCI 进程生命周期与并发隔离、Web API 强类型输入校验与全链路优雅降级，以及配套 19 项回归测试。
+**影响文件**：`src/tools/webster.py`、`src/tools/green_wave.py`、`src/tools/rerouting.py`、`src/tools/evaluator.py`、`src/simulation/sumo_sandbox.py`、`src/agents/llm_client.py`、`src/agents/traffic_agent.py`、`src/web/app.py`、`tests/test_system.py`、`tests/test_web_api.py`
+**兼容性**：完全向后兼容。所有修改均遵循最小侵入性原则，现有公共 API 签名、数据结构与仿真逻辑完全保留，新增 `POST /api/decide` 一站式全流程接口。
+
+---
+
+### 一、缺陷排查与改进动因
+
+经过全系统架构审视与勘测，发现以下各层级的边界缺陷、除零隐患、并发碰撞与非预期异常：
+1. **`src/tools/webster.py` 饱和流量与配时残差隐患**：
+   - 当传入非正数 `s_per_lane <= 0` 时可能引发除零或反向流比计算错误；
+   - 绿灯分配浮点数取整与最小值限制后，累加和与设计有效绿灯时长可能存在浮点偏差，未能严格满足 $\sum g_i + L = C$；
+   - `optimal_cycle` 在极端截断时未能保证统一返回 `float` 类型。
+2. **`src/tools/green_wave.py` 反向绿波与边界防御**：
+   - 当 `weight_forward == 0.0`（纯反向绿波）时，因早期逻辑缺少对反向累积步长的完整展开，计算反向偏移出现偏置失效；
+   - 缺少对非正数巡航速度（`progression_speed_kmh <= 0`）与负数路段间距的防御；
+   - 反向带宽计算在单向极端配比下缺乏安全下界保护。
+3. **`src/tools/rerouting.py` 阈值错配与零流量假诱导**：
+   - 拥堵触发条件 1 硬编码 `queue_ratio >= 0.5`，未能遵循用户自定义的 `self.queue_thresh`；
+   - 上游流量为 0 或负数时未作前置短路拦截，仍可能计算分流；
+   - 当综合拥堵严重度 `severity <= 0.0` 时，存在底线 10% 假诱导触发漏洞；在阈值为 1.0 的极限工况下存在除零与取整截断误差。
+4. **`src/tools/evaluator.py` 空值异常防护**：
+   - 当沙盒因模拟中断返回包含 `None` 的字段（如 `total_co2_mg: None`、`vehicle_delays` 包含 `None` 元素）时，直接求和或调用 `mean()` 会抛出 `TypeError`；
+   - `compare_schemes` 面对 `None` 指标值时缺乏安全兜底。
+5. **`src/simulation/sumo_sandbox.py` 进程管理与并发安全**：
+   - TraCI 启动标签原仅依赖内存计数器 `port_counter`，多进程/并发 Web Worker 环境下存在连接标签碰撞风险；
+   - SUMO 二进制文件路径若不存在或配置错误，未提前拦截抛出明确的 `FileNotFoundError`；
+   - `traci.start` 缺少 `try...finally` 异常保障，且退出时 `conn.close(wait=True)` 在 SUMO 僵死时会导致测试或服务无限挂起。
+6. **`src/agents/llm_client.py` 与 `traffic_agent.py` 解析与因果链描述**：
+   - `llm_client.py` 提取 JSON 块未加 `re.IGNORECASE`，对 ````JSON` 等大小写变体无法识别；LLM 超时缺少正数下界保护；
+   - `traffic_agent.py` 缺少安全的类型转换，易受 `None`、`Inf`、`NaN` 影响；
+   - 方案 B 在分流率为 0.0% 时，决策描述中仍会错误宣称“实施动态诱导分流削减合流瓶颈输入负荷”，存在物理因果矛盾；
+   - `generate_decision_report` 面对 `None` 参数时存在空指针异常隐患。
+7. **`src/web/app.py` 接口校验与异常防护**：
+   - 缺少对 `/api/strategies` 输入参数的强类型校验模型；
+   - `/api/report/export` 与 `/api/report/download` 对前端传入的格式错误 `rollout_data`（如 `kpis` 为字符串）未作拦截，会引发未捕获的 500 异常；
+   - 缺少端到端一站式辅助决策综合端点（`/api/decide`）。
+
+---
+
+### 二、核心改动与工程实现
+
+1. **配时与控制算法加固**：
+   - `webster.py`：对 `s_per_lane` 增加 `max(100.0, float(s_per_lane))` 保护；重构绿灯分配与舍入残差补偿算法，将浮点舍入与最小绿灯约束产生的残差精准补偿至最大关键相位的绿灯时长，保证 $\sum g_i + L = C$ 严丝合缝；
+   - `green_wave.py`：修复纯反向绿波（`weight_forward == 0.0`）的累积步长计算；巡航速度与路段间距加入非负安全下界保护；
+   - `rerouting.py`：将条件 1 的队列比硬编码纠正为 `self.queue_thresh`；上游流量 `<= 0` 时立即返回 0 分流率与空诱导列表；彻底剔除未拥堵（`severity <= 0.0`）状态下的 10% 假诱导；处理阈值等于 1.0 时的饱和度边界。
+2. **评测与数据弹性**：
+   - `evaluator.py`：全面过滤 `vehicle_speeds` 与 `vehicle_delays` 中的 `None`、`NaN`、`Inf` 异常值；对 `total_co2_mg`、`total_fuel_mg`、`completed_trips` 等标量提供安全抽取与缺省填补；`compare_schemes` 增加 `None` 保护。
+3. **微观沙盒稳定性与并发隔离**：
+   - `sumo_sandbox.py`：TraCI 标签引入 `os.getpid()` 与 `uuid.uuid4().hex[:8]` 熵源，实现多进程/多线程完全隔离；
+   - 启动前通过 `os.path.isfile` 校验 SUMO 可执行文件，缺失时抛出具名 `FileNotFoundError`；
+   - 退出清理改为非阻塞 `conn.close(wait=False)`，并对子进程设置 5.0 秒超时等待（`proc.wait(timeout=5.0)`），超时强制 `proc.kill()` 彻底回收资源，防止孤儿进程与进程卡死。
+4. **决策智能体因果逻辑与报告健壮性**：
+   - `llm_client.py`：正则提取加入 `re.IGNORECASE`，超时下界设定为 1.0s；
+   - `traffic_agent.py`：增加 `_safe_float` 与 `_parse_bool` 辅助方法，安全处理布尔字符串与数值异常；修正方案 B 在 `reroute_ratio <= 0.0` 时的描述文案与实施指令；完善 `generate_decision_report` 对 `None` 参数的容错与缺省填充。
+5. **Web API 安全增强**：
+   - `src/web/app.py`：新增 `StrategyFormulationInput` 与 `DecisionPipelineInput` 模型；对 `TrafficStateInput` 增加数值上下界约束；
+   - 在 `ReportExportInput` 中增加模型校验器，拦截非法 `rollout_data` 并返回规范的 HTTP 422 错误；
+   - 增加 `POST /api/decide` 端点，一键完成“态势诊断 -> 策略生成 -> What-If 推演 -> 决策简报生成”全流程；
+   - 为 `/api/rollout` 与报告端点添加异常捕获与友好错误提示，防止未捕获 500 异常。
+6. **单元测试与回归测试扩充**：
+   - `tests/test_system.py` 新增 14 个回归测试用例；
+   - `tests/test_web_api.py` 新增 5 个回归测试用例；
+   - 现测试套件包含 56 个单元测试，100% 自动执行通过。
+
+---
+
+### 三、验证记录
+
+- **测试命令**：`py -3.10 -m unittest discover -s tests -p "test_*.py" -v`
+- **执行结果**：`56 tests passed in 0.772s (0 failures, 0 errors, 100% pass)`
+- **覆盖重点**：
+  - Webster 残差补偿、4 相位周期下界、零饱和流量防护；
+  - 绿波纯反向相位差递进、负间距防御、零速度除零防御；
+  - 动态分流自定义排队阈值、零流量拦截、未拥堵零诱导、极限 1.0 饱和度处理；
+  - Evaluator 对全字段显式 `None` 的安全吸收与对比计算；
+  - SUMO 沙盒缺失可执行文件检测、PID+UUID 标签隔离；
+  - 智能体 0 分流因果描述修正、None 报告容错；
+  - Web API 异常参数 HTTP 422 拦截、物理仿真异常优雅降级为标定推演、端到端 `/api/decide` 成功输出。
+
+---
+
 ## [2026-09-12] 多随机种子统计评测 + 绿波累积相位差修复 + Webster物理周期约束与端到端强化
 
 **改进范围**：完成双向干线绿波累积相位差理论修复、Webster 4相位物理周期可行性下界约束、多随机种子蒙特卡洛评测与统计学置信度（SEM & 95% CI）评定、决策简报全场景（含负向车速权衡与缺失数据防编造）精确断言、FastAPI 种子透传与 `/api/evaluate/multi-seed` 新接口落地、评测器燃油改善率与基线中立化。
