@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<edges xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/edges_file.xsd">
+    <!-- Main Arterial Links (Dual 6-Lane, Speed 60 km/h = 16.67 m/s) -->
+    <edge id="entry_J1" from="entry_W" to="J1" numLanes="3" speed="16.67"/>
+    <edge id="J1_entry" from="J1" to="entry_W" numLanes="3" speed="16.67"/>
+
+    <edge id="J1_J2" from="J1" to="J2" numLanes="3" speed="16.67"/>
+    <edge id="J2_J1" from="J2" to="J1" numLanes="3" speed="16.67"/>
+
+    <edge id="J2_J3" from="J2" to="J3" numLanes="3" speed="16.67"/>
+    <edge id="J3_J2" from="J3" to="J2" numLanes="3" speed="16.67"/>
+
+    <edge id="J3_exit" from="J3" to="exit_E" numLanes="3" speed="16.67"/>
+    <edge id="exit_J3" from="exit_E" to="J3" numLanes="3" speed="16.67"/>
+
+    <!-- Cross Streets at J1 (Dual 4-Lane, Speed 40 km/h = 11.11 m/s) -->
+    <edge id="N1_J1" from="N1" to="J1" numLanes="2" speed="11.11"/>
+    <edge id="J1_N1" from="J1" to="N1" numLanes="2" speed="11.11"/>
+    <edge id="S1_J1" from="S1" to="J1" numLanes="2" speed="11.11"/>
+    <edge id="J1_S1" from="J1" to="S1" numLanes="2" speed="11.11"/>
+
+    <!-- Cross Streets at J2 (Bottleneck Intersection) -->
+    <edge id="N2_J2" from="N2" to="J2" numLanes="2" speed="11.11"/>
+    <edge id="J2_N2" from="J2" to="N2" numLanes="2" speed="11.11"/>
+    <edge id="S2_J2" from="S2" to="J2" numLanes="2" speed="11.11"/>
+    <edge id="J2_S2" from="J2" to="S2" numLanes="2" speed="11.11"/>
+
+    <!-- Cross Streets at J3 -->
+    <edge id="N3_J3" from="N3" to="J3" numLanes="2" speed="11.11"/>
+    <edge id="J3_N3" from="J3" to="N3" numLanes="2" speed="11.11"/>
+    <edge id="S3_J3" from="S3" to="J3" numLanes="2" speed="11.11"/>
+    <edge id="J3_S3" from="J3" to="S3" numLanes="2" speed="11.11"/>
+
+    <!-- North Parallel Bypass Detour (Dual 4-Lane, Speed 50 km/h = 13.89 m/s) -->
+    <edge id="entry_div" from="entry_W" to="div_W" numLanes="2" speed="13.89"/>
+    <edge id="div_byp" from="div_W" to="byp_mid" numLanes="2" speed="13.89"/>
+    <edge id="byp_mer" from="byp_mid" to="mer_E" numLanes="2" speed="13.89"/>
+    <edge id="mer_exit" from="mer_E" to="exit_E" numLanes="2" speed="13.89"/>
+</edges>

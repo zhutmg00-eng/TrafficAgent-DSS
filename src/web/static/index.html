@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TrafficAgent-DSS 城市交通拥堵治理数字孪生决策支持系统</title>
+  <meta name="description" content="2026年第十六届北京市大学生交通科技大赛 · ITSAC 2026 创新挑战赛（赛题2）高品质决策支持系统">
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="/static/css/style.css">
+  <!-- ECharts 5 Library: Local Vendor First with CDN Fallback -->
+  <script src="/static/js/vendor/echarts.min.js"></script>
+  <script>
+    if (typeof echarts === 'undefined') {
+      document.write('<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"><\\/script>');
+    }
+  </script>
+</head>
+<body>
+
+  <!-- Top Application Header -->
+  <header class="header">
+    <div class="header-brand">
+      <span class="brand-icon">🚦</span>
+      <div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <h1 class="brand-title">TrafficAgent-DSS</h1>
+          <span class="brand-badge">DECISION PLATFORM</span>
+        </div>
+        <p class="brand-subtitle">城市交通拥堵治理数字孪生决策支持系统 · Digital Twin Decision Support System</p>
+      </div>
+    </div>
+
+    <div class="header-status">
+      <div class="status-badge">
+        <span class="status-dot"></span>
+        <span>微观沙盒：就绪 (SUMO / TraCI)</span>
+      </div>
+      <div class="status-badge">
+        <span class="status-dot"></span>
+        <span>智能体大脑：在线 (CoT Agent)</span>
+      </div>
+      <button class="theme-toggle" id="themeToggleBtn" title="切换深色/浅色模式">☀️</button>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <div class="app-container">
+
+    <!-- Left Control Sidebar -->
+    <aside class="sidebar-panel">
+      <!-- Scenario Setup Card -->
+      <div class="panel-card">
+        <h2 class="panel-title">
+          <span>⚙️</span> 仿真与实验场景配置
+        </h2>
+
+        <div class="form-group">
+          <label class="form-label" for="corridorSelect">目标交通走廊</label>
+          <select class="form-select" id="corridorSelect">
+            <option value="corridor_arterial">典型城市交通走廊 (主干道-瓶颈合流段)</option>
+            <option value="corridor_2nd_ring">城市快速路合流区 (快速路合流走廊)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="congestionSelect">拥堵诱因工况</label>
+          <select class="form-select" id="congestionSelect">
+            <option value="incident_peak">晚高峰潮汐高负荷 + 突发事故 (占道停靠)</option>
+            <option value="overflow">常态化高峰期交叉口失衡溢流</option>
+            <option value="bottleneck_reduce">施工车道缩减 (3车道骤减至1车道)</option>
+          </select>
+        </div>
+
+        <div class="form-group slider-group">
+          <div class="slider-meta">
+            <span>推演时间窗口</span>
+            <span id="durationVal" style="font-weight:600;color:var(--text-primary);">600s</span>
+          </div>
+          <input type="range" class="form-slider" id="durationSlider" min="300" max="900" step="60" value="600">
+        </div>
+
+        <div class="form-group slider-group">
+          <div class="slider-meta">
+            <span>事故发生时间</span>
+            <span id="incidentStartVal" style="font-weight:600;color:var(--text-primary);">150s</span>
+          </div>
+          <input type="range" class="form-slider" id="incidentStartSlider" min="60" max="300" step="30" value="150">
+        </div>
+
+        <div class="form-group slider-group">
+          <div class="slider-meta">
+            <span>事故撤离恢复时间</span>
+            <span id="incidentEndVal" style="font-weight:600;color:var(--text-primary);">420s</span>
+          </div>
+          <input type="range" class="form-slider" id="incidentEndSlider" min="300" max="600" step="30" value="420">
+        </div>
+      </div>
+
+      <!-- Agent Governance Tools Card -->
+      <div class="panel-card">
+        <h2 class="panel-title">
+          <span>🤖</span> 智能体协同工具调度
+        </h2>
+
+        <div class="toggle-group">
+          <div class="toggle-item">
+            <span class="toggle-text">VMS 动态诱导分流</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="toggleReroute" checked>
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+
+          <div class="toggle-item">
+            <span class="toggle-text">干线动态绿波协调</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="toggleGreenWave" checked>
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+
+          <div class="toggle-item">
+            <span class="toggle-text">Webster 自适应信号调控</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="toggleWebster" checked>
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+
+          <div class="toggle-item">
+            <span class="toggle-text">微观 SUMO 进程推演</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="toggleSandbox">
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div style="margin-top:20px;">
+          <button class="btn-primary" id="runSimulationBtn">
+            <div class="spinner"></div>
+            <span>🚀 启动智能体诊断与推演 (Run Agent DSS)</span>
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Flow -->
+    <main class="main-content">
+
+      <!-- Real-time Emergency Warning Banner -->
+      <div class="alert-card">
+        <div class="alert-content">
+          <span class="alert-icon">🚨</span>
+          <div>
+            <div class="alert-title" id="alertTitle">系统警报：走廊瓶颈段发生突发占道拥堵</div>
+            <div class="alert-desc" id="alertDesc">核心节点 J1_J2 排队已达 165 米 (库容比 55%)。若无干预，将在 180 秒内引发 J1 交叉口全面回溢死锁！</div>
+          </div>
+        </div>
+        <span class="alert-badge" id="alertBadge">死锁高风险 (Level 4)</span>
+      </div>
+
+      <!-- Section 1: Situational Awareness -->
+      <section>
+        <div class="section-header">
+          <h2 class="section-title">
+            <span>📍</span> 1. 走廊实时交通态势感知看板 (Situational Awareness)
+          </h2>
+          <span style="font-size:12px;color:var(--text-muted);">车道级线圈与卡口多源融合感知</span>
+        </div>
+
+        <div class="kpi-grid">
+          <div class="kpi-card danger">
+            <div class="kpi-label">瓶颈段瞬时车速</div>
+            <div class="kpi-value" id="kpiSpeed">8.2 km/h</div>
+            <div class="kpi-delta negative" id="kpiSpeedDelta">▼ -72.6% (严重阻滞)</div>
+          </div>
+
+          <div class="kpi-card danger">
+            <div class="kpi-label">核心路段最大排队</div>
+            <div class="kpi-value" id="kpiQueue">165.0 m</div>
+            <div class="kpi-delta negative" id="kpiQueueDelta">▲ +110m (逼近回溢线)</div>
+          </div>
+
+          <div class="kpi-card warn">
+            <div class="kpi-label">断面车道占有率</div>
+            <div class="kpi-value" id="kpiOcc">82%</div>
+            <div class="kpi-delta negative" id="kpiOccDelta">▲ 超出容量设计阈值</div>
+          </div>
+
+          <div class="kpi-card success">
+            <div class="kpi-label">平行旁路空闲容量</div>
+            <div class="kpi-value" id="kpiBypass">1,200 veh/h (28%)</div>
+            <div class="kpi-delta positive" id="kpiBypassDelta">● 备用容量充沛，适宜分流</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 2: Agent CoT Reasoning Terminal -->
+      <section>
+        <div class="section-header">
+          <h2 class="section-title">
+            <span>🧠</span> 2. 智能体思维链推理与拥堵归因 (Agent CoT Diagnosis Engine)
+          </h2>
+          <span style="font-size:12px;color:var(--accent-cyan);font-weight:600;">LLM Reasoning Layer</span>
+        </div>
+
+        <div class="terminal-window">
+          <div class="terminal-header">
+            <div class="terminal-dots">
+              <span class="dot red"></span>
+              <span class="dot yellow"></span>
+              <span class="dot green"></span>
+            </div>
+            <span class="terminal-title">TrafficDecisionAgent::ChainOfThought::Attribution()</span>
+            <span class="terminal-actions">STATUS: CONVERGED</span>
+          </div>
+          <div class="terminal-body" id="cotTerminalBody">
+            <!-- Populated by JavaScript -->
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 3: Candidate Strategies Grid -->
+      <section>
+        <div class="section-header">
+          <h2 class="section-title">
+            <span>⚡</span> 3. 候选治理预案构想与交通工程工具集成
+          </h2>
+          <span style="font-size:12px;color:var(--text-muted);">Webster 配时 / 绿波协调 / 动态重路由集成</span>
+        </div>
+
+        <div class="strategy-grid">
+          <!-- Baseline Card -->
+          <div class="strategy-card baseline">
+            <div>
+              <div class="strategy-header">
+                <span class="strategy-tag">对照基准</span>
+                <h3 class="strategy-name">基线方案 (Do-Nothing)</h3>
+              </div>
+              <p class="strategy-desc">维持原有静态定时配时方案，不启动干线绿波，无上游诱导分流。</p>
+            </div>
+            <div class="strategy-specs">
+              <div class="spec-row">
+                <span class="spec-name">信号周期:</span>
+                <span class="spec-val">90s (静态)</span>
+              </div>
+              <div class="spec-row">
+                <span class="spec-name">诱导分流比例:</span>
+                <span class="spec-val">0%</span>
+              </div>
+              <div class="spec-row">
+                <span class="spec-name">协同机制:</span>
+                <span class="spec-val">无协同</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Strategy A Card -->
+          <div class="strategy-card strat-a">
+            <div>
+              <div class="strategy-header">
+                <span class="strategy-tag">单一调控</span>
+                <h3 class="strategy-name">方案 A：Webster 局部自适应</h3>
+              </div>
+              <p class="strategy-desc">基于 Webster 延迟最小化经典理论动态优化周期与绿信比，提升单点放行效率。</p>
+            </div>
+            <div class="strategy-specs">
+              <div class="spec-row">
+                <span class="spec-name">优化后周期:</span>
+                <span class="spec-val" id="stratACycle">112s</span>
+              </div>
+              <div class="spec-row">
+                <span class="spec-name">诱导分流比例:</span>
+                <span class="spec-val">0%</span>
+              </div>
+              <div class="spec-row">
+                <span class="spec-name">协同机制:</span>
+                <span class="spec-val">局部优化</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Strategy B Card (Recommended) -->
+          <div class="strategy-card strat-b recommended">
+            <span class="strategy-badge-top">⭐ 智能体推荐预案</span>
+            <div>
+              <div class="strategy-header">
+                <span class="strategy-tag">时空协同</span>
+                <h3 class="strategy-name">方案 B：TrafficAgent-DSS 协同</h3>
+              </div>
+              <p class="strategy-desc">Webster 信号配时 + J1-J3 干线双向绿波协调 + 上游 VMS 动态诱导分流 25% 交通流至北部平行通道。</p>
+            </div>
+            <div class="strategy-specs">
+              <div class="spec-row">
+                <span class="spec-name">协同周期:</span>
+                <span class="spec-val" id="stratBCycle">112s</span>
+              </div>
+              <div class="spec-row">
+                <span class="spec-name">VMS 诱导分流:</span>
+                <span class="spec-val" id="stratBReroute">25%</span>
+              </div>
+              <div class="spec-row">
+                <span class="spec-name">绿波协调车速:</span>
+                <span class="spec-val">50 km/h (相差补偿)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 4: What-If Simulation Analytics -->
+      <section>
+        <div class="section-header">
+          <h2 class="section-title">
+            <span>📊</span> 4. 数字孪生沙盒推演与多方案量化评估 (What-If Simulation Analytics)
+          </h2>
+          <span style="font-size:12px;color:var(--accent-green);font-weight:600;">综合评级：卓越 (Level A+)</span>
+        </div>
+
+        <!-- Metric Delta Row -->
+        <div class="rollout-kpi-bar">
+          <div class="rollout-kpi-pill">
+            <div class="rollout-kpi-label">平均延误削减</div>
+            <div class="rollout-kpi-imp" id="rolloutDelayImp">-44.6%</div>
+            <div class="rollout-kpi-actual" id="rolloutDelayAct">降至 46.8 s/veh</div>
+          </div>
+
+          <div class="rollout-kpi-pill">
+            <div class="rollout-kpi-label">最大排队削减</div>
+            <div class="rollout-kpi-imp" id="rolloutQueueImp">-56.6%</div>
+            <div class="rollout-kpi-actual" id="rolloutQueueAct">缩减至 105.0 m</div>
+          </div>
+
+          <div class="rollout-kpi-pill">
+            <div class="rollout-kpi-label">瓶颈车速提升</div>
+            <div class="rollout-kpi-imp" id="rolloutSpeedImp">+138.3%</div>
+            <div class="rollout-kpi-actual" id="rolloutSpeedAct">提升至 22.4 km/h</div>
+          </div>
+
+          <div class="rollout-kpi-pill">
+            <div class="rollout-kpi-label">路网吞吐提升</div>
+            <div class="rollout-kpi-imp" id="rolloutTpImp">+32.8%</div>
+            <div class="rollout-kpi-actual" id="rolloutTpAct">达 1,780 veh/h</div>
+          </div>
+
+          <div class="rollout-kpi-pill">
+            <div class="rollout-kpi-label">碳排放减排比例</div>
+            <div class="rollout-kpi-imp" id="rolloutCo2Imp">-26.2%</div>
+            <div class="rollout-kpi-actual" id="rolloutCo2Act">降至 134.6 kg</div>
+          </div>
+        </div>
+
+        <!-- Dual Chart Containers -->
+        <div class="charts-grid">
+          <!-- Radar Chart -->
+          <div class="chart-card">
+            <div class="chart-header">
+              <h3 class="chart-title">
+                <span>📌</span> 五维交通治理效能雷达图
+              </h3>
+              <span style="font-size:11px;color:var(--text-muted);">通行/治堵/容量/平稳/低碳</span>
+            </div>
+            <div class="chart-container" id="radarChartContainer"></div>
+          </div>
+
+          <!-- Time Series Chart -->
+          <div class="chart-card">
+            <div class="chart-header">
+              <h3 class="chart-title">
+                <span>⏱️</span> 600秒推演期：瓶颈排队消散时序曲线
+              </h3>
+              <span style="font-size:11px;color:var(--text-muted);">微观车辆积压与消散动态</span>
+            </div>
+            <div class="chart-container" id="timeSeriesChartContainer"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 5: Decision Briefing & Export -->
+      <section>
+        <div class="section-header">
+          <h2 class="section-title">
+            <span>📑</span> 5. 格式化决策简报与协同实施建议 (Decision Briefing)
+          </h2>
+          <div class="report-header-actions">
+            <button class="btn-secondary" id="copyReportBtn">
+              <span>📋</span> 复制简报文本
+            </button>
+            <button class="btn-secondary" id="downloadReportBtn">
+              <span>📥</span> 导出 Markdown
+            </button>
+          </div>
+        </div>
+
+        <div class="report-card">
+          <div class="report-content" id="reportMarkdownContent">正在生成专业决策简报...</div>
+        </div>
+      </section>
+
+    </main>
+
+  </div>
+
+  <!-- JavaScript Controller -->
+  <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

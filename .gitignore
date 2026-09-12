@@ -1,0 +1,47 @@
+# Byte-compiled / optimized / URL mapping files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments & Virtual Envs
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE / Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Office temporary lock files
+~$*.docx
+~$*.doc
+~$*.xlsx
+~$*.pptx
+
+# SUMO / Simulation outputs & temp logs
+*.out.xml
+*.tripinfo.xml
+*.summary.xml
+*.trajectories.xml
+log/
+logs/
+*.log
+
+# OS generated files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Local competition notices, internal drafts and submission templates (kept locally only)
+*.pdf
+附件*
+*通知*
+agent.md
+docs/*_draft.md
+docs/competition_guide.md

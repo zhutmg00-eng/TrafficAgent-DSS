@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nodes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/nodes_file.xsd">
+    <!-- Main Arterial Junctions -->
+    <node id="entry_W" x="-600.0" y="0.0" type="priority"/>
+    <node id="J1" x="-300.0" y="0.0" type="traffic_light" tl="J1"/>
+    <node id="J2" x="0.0" y="0.0" type="traffic_light" tl="J2"/>
+    <node id="J3" x="300.0" y="0.0" type="traffic_light" tl="J3"/>
+    <node id="exit_E" x="600.0" y="0.0" type="priority"/>
+
+    <!-- Cross Street Nodes -->
+    <node id="N1" x="-300.0" y="250.0" type="priority"/>
+    <node id="S1" x="-300.0" y="-250.0" type="priority"/>
+
+    <node id="N2" x="0.0" y="250.0" type="priority"/>
+    <node id="S2" x="0.0" y="-250.0" type="priority"/>
+
+    <node id="N3" x="300.0" y="250.0" type="priority"/>
+    <node id="S3" x="300.0" y="-250.0" type="priority"/>
+
+    <!-- Bypass Detour Corridor Nodes (North Parallel Road) -->
+    <node id="div_W" x="-450.0" y="150.0" type="priority"/>
+    <node id="byp_mid" x="0.0" y="150.0" type="priority"/>
+    <node id="mer_E" x="450.0" y="150.0" type="priority"/>
+</nodes>
