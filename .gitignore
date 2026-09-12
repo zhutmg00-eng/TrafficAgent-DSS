@@ -50,3 +50,7 @@ docs/competition_guide.md
 # 其余位置的 PDF 视为本地材料；docs/ 下的正式 PDF 例外放行
 *.pdf
 !docs/*.pdf
+
+# Teamwork subagent runtime workspaces
+.agents/
+ORIGINAL_REQUEST.md
