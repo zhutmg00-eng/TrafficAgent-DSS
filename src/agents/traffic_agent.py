@@ -80,7 +80,11 @@ class TrafficDecisionAgent:
     def __init__(self, scenario_dir: Optional[str] = None):
         self.scenario_dir = scenario_dir
         self.sandbox = SumoSimulationSandbox(scenario_dir=scenario_dir)
-        self.webster = WebsterSignalOptimizer()
+        # Lost time per phase is set to the network's yellow time (4 s), so Webster's
+        # optimal cycle and the actual clock cycle of the deployed program agree exactly
+        # (C = g_main + 2*yellow + g_cross). With the default 3.5 s the cycle would drift
+        # by 1 s per plan, which is enough to de-align a coordinated green wave.
+        self.webster = WebsterSignalOptimizer(lost_time_per_phase=4.0)
         self.green_wave = GreenWaveCoordinator()
         self.rerouter = DynamicReroutingAllocator()
         self.evaluator = PerformanceEvaluator()
@@ -132,15 +136,50 @@ class TrafficDecisionAgent:
         occupancy = float(state.get("occupancy", 0.82))
         bypass_occ = float(state.get("bypass_occupancy", 0.28))
 
-        # Corridor-calibrated demand profile (pcu/h per phase) and approach lane counts.
-        phase_flows = [1600.0, 400.0, 500.0, 300.0]
-        phase_lanes = [3, 1, 2, 1]
+        # Corridor-calibrated demand profile.
+        #
+        # The network's TLS structure has exactly TWO release phases per junction
+        # (arterial EW green + cross-street NS green, with 4 s yellows — see
+        # scenarios/corridor.net.xml), so Webster must be run with two phases as well.
+        # Computing a 4-phase plan (as the previous revision did) produced green splits
+        # that could not be mapped onto the real signal and de-synchronised the corridor.
+        #
+        # Critical flow per release phase (larger of the two opposing approaches at the
+        # peak, from the calibrated demand profile):
+        #   arterial EW: 1980 pcu/h (EB peak) over 3 lanes
+        #   cross  NS :  720 pcu/h (J2 section) over 2 lanes
+        phase_flows = [1980.0, 720.0]
+        phase_lanes = [3, 2]
 
         timing = self.webster.compute_timing(phase_flows=phase_flows, phase_lanes=phase_lanes)
-        arterial_green = timing["green_splits"][0]
+        yellow_time = 4.0  # matches corridor.net.xml
+
+        # ---- Design cycle selection ------------------------------------------ #
+        # Webster's minimum-delay cycle (≈45 s here) assumes under-saturated flow and
+        # fixed-time control. This corridor operates under incident-induced
+        # over-saturation, where the standard engineering correction is a *longer*
+        # cycle: lost time per cycle is fixed, so a short cycle wastes a larger share
+        # of it, and longer greens are needed to drain the queued demand. The design
+        # cycle is therefore lifted to twice Webster's minimum and clamped to the
+        # 60-120 s practical range for urban arterials. The controller stays
+        # `actuated`, so the plan is a *baseline* the adaptive logic can stretch or
+        # shorten within the min/max bounds.
+        design_cycle = min(120.0, max(60.0, round(timing["optimal_cycle"] * 2.0)))
+
+        # Re-allocate green times within the design cycle using Webster's flow ratios.
+        y_main = timing["flow_ratios"][0]
+        y_cross = timing["flow_ratios"][1]
+        y_sum = max(1e-6, y_main + y_cross)
+        available_green = design_cycle - 2.0 * yellow_time
+        arterial_green = round(available_green * y_main / y_sum, 1)
+        cross_green = round(available_green - arterial_green, 1)
+
+        # Clock cycle actually realised by the deployed program.
+        actual_cycle = round(arterial_green + cross_green + 2.0 * yellow_time, 1)
+
         gw_plan = self.green_wave.compute_offsets(
             intersection_distances=[300.0, 300.0],
-            cycle_length=timing["optimal_cycle"],
+            cycle_length=actual_cycle,
             green_splits_arterial=[arterial_green, arterial_green, arterial_green],
             progression_speed=13.89,  # 50 km/h
         )
@@ -157,6 +196,25 @@ class TrafficDecisionAgent:
             "green_wave": gw_plan,
             "reroute": reroute_plan,
             "arterial_green": arterial_green,
+            "cross_green": cross_green,
+            "yellow_time": yellow_time,
+            "actual_cycle": actual_cycle,
+            # Ready-to-deploy signal program: Webster-ratio baseline within the corrected
+            # design cycle. `type=actuated` keeps the adaptive min/max-green behaviour the
+            # incident scenario depends on; `first_green_start` is filled in per strategy
+            # (zeros for the uncoordinated plan, green-wave offsets for the coordinated one).
+            "signal_program": {
+                "type": "actuated",
+                "green_main": arterial_green,
+                "green_cross": cross_green,
+                "yellow": yellow_time,
+                "cycle_length": actual_cycle,
+                "min_green_main": max(20.0, round(arterial_green * 0.4, 1)),
+                "max_green_main": round(arterial_green * 1.4, 1),
+                "min_green_cross": 8.0,
+                "max_green_cross": round(cross_green * 1.4, 1),
+                "first_green_start": [0.0, 0.0, 0.0],
+            },
             "inputs_used": {
                 "source": (
                     "diagnosis.input_state (detector-derived)"
@@ -307,8 +365,10 @@ class TrafficDecisionAgent:
             "id": "strategy_a_webster",
             "name": "方案 A：局部自适应信号优化 (Webster Adaptive)",
             "description": "基于 Webster 经典方法动态优化 J1-J3 交叉口信号周期与主路绿信比，提高瓶颈口放行效率。",
-            "cycle_length": timing["optimal_cycle"],
+            "cycle_length": plan["actual_cycle"],
             "green_split_arterial": arterial_green,
+            "green_split_cross": plan["cross_green"],
+            "yellow_time": plan["yellow_time"],
             "reroute_ratio": 0.0,
             "green_wave": False,
         }
@@ -317,12 +377,14 @@ class TrafficDecisionAgent:
             "id": "strategy_b_agent_dss",
             "name": "方案 B：TrafficAgent-DSS 系统级协同调控 (推荐)",
             "description": (
-                f"时空协同控制：Webster 动态调优（周期 {timing['optimal_cycle']}s）"
+                f"时空协同控制：Webster 动态调优（周期 {plan['actual_cycle']}s）"
                 f" + J1-J3 双向绿波协调 + 上游 VMS 动态诱导分流 "
                 f"{int(reroute_plan['diversion_ratio']*100)}% 至北部旁路。"
             ),
-            "cycle_length": timing["optimal_cycle"],
+            "cycle_length": plan["actual_cycle"],
             "green_split_arterial": arterial_green,
+            "green_split_cross": plan["cross_green"],
+            "yellow_time": plan["yellow_time"],
             "green_wave_offsets": gw_plan["offsets"],
             "reroute_ratio": reroute_plan["diversion_ratio"],
             "vms_advisory": reroute_plan["vms_advisory"],
@@ -340,9 +402,11 @@ class TrafficDecisionAgent:
                     "主要诱因": diagnosis.get("root_causes", []),
                 },
                 "工具计算结果_原样采用不得修改": {
-                    "韦伯斯特最优周期_秒": timing["optimal_cycle"],
-                    "主路绿信比_秒": arterial_green,
-                    "各相位绿灯_秒": timing["green_splits"],
+                    "韦伯斯特最小延误周期_秒": timing["optimal_cycle"],
+                    "设计周期_秒（过饱和修正后）": plan["actual_cycle"],
+                    "主路绿灯_秒": arterial_green,
+                    "支路绿灯_秒": plan["cross_green"],
+                    "黄灯_秒": plan["yellow_time"],
                     "饱和度": timing["degree_of_saturation"],
                     "绿波相位差_秒": gw_plan["offsets"],
                     "绿波带宽_秒": gw_plan["bandwidth_seconds"],
@@ -426,15 +490,17 @@ class TrafficDecisionAgent:
         defaults, closing the diagnosis -> strategy loop.
         """
         plan = self._tool_plan(diagnosis)
-        timing = plan["timing"]
         gw_plan = plan["green_wave"]
         reroute_ratio = plan["reroute"]["diversion_ratio"] if use_rerouting else 0.0
 
-        shared_control = {
-            "green_wave_offsets": gw_plan["offsets"],
-            "cycle_length": timing["optimal_cycle"],
-            "arterial_green": plan["arterial_green"],
-        }
+        # Signal programs deployed (once) by the simulator for the two actuated strategies.
+        # Both use the same Webster timing aligned with the network's two release phases;
+        # the coordinated plan additionally aligns each junction's cycle to the green-wave
+        # offset, while the single-point plan starts every junction at phase 0.
+        program_uncoordinated = dict(plan["signal_program"], first_green_start=[0.0, 0.0, 0.0])
+        program_coordinated = dict(
+            plan["signal_program"], first_green_start=list(gw_plan["offsets"])
+        )
 
         # Run Baseline
         print("[Agent] Rolling out Baseline (Do-Nothing)...")
@@ -454,9 +520,12 @@ class TrafficDecisionAgent:
             duration=duration,
             incident_start=incident_start,
             incident_end=incident_end,
-            control_params=dict(
-                shared_control, reroute_ratio=0.0, green_wave=False, webster=use_webster
-            ),
+            control_params={
+                "signal_program": program_uncoordinated,
+                "reroute_ratio": 0.0,
+                "green_wave": False,
+                "webster": use_webster,
+            },
         )
         kpi_a = self.evaluator.compute_summary_kpi(res_a)
         comp_a = self.evaluator.compare_schemes(kpi_base, kpi_a)
@@ -468,12 +537,14 @@ class TrafficDecisionAgent:
             duration=duration,
             incident_start=incident_start,
             incident_end=incident_end,
-            control_params=dict(
-                shared_control,
-                reroute_ratio=reroute_ratio,
-                green_wave=use_green_wave,
-                webster=use_webster,
-            ),
+            control_params={
+                "signal_program": (
+                    program_coordinated if use_green_wave else program_uncoordinated
+                ),
+                "reroute_ratio": reroute_ratio,
+                "green_wave": use_green_wave,
+                "webster": use_webster,
+            },
         )
         kpi_b = self.evaluator.compute_summary_kpi(res_b)
         comp_b = self.evaluator.compare_schemes(kpi_base, kpi_b)

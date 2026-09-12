@@ -234,8 +234,76 @@ class TestTrafficAgentDSS(unittest.TestCase):
         self.assertTrue(by_scheme["agent_dss"]["green_wave"])
         self.assertGreater(by_scheme["agent_dss"]["reroute_ratio"], 0.0)
 
-        # Green-wave offsets must be real numbers, not an empty placeholder.
-        self.assertTrue(by_scheme["agent_dss"]["green_wave_offsets"])
+        # Signal program must be a real, deployable plan with non-zero green times.
+        sp_b = by_scheme["agent_dss"]["signal_program"]
+        self.assertGreater(sp_b["green_main"], 0)
+        self.assertGreater(sp_b["green_cross"], 0)
+        # The coordinated plan must carry real phase offsets (3 junctions), not placeholders.
+        self.assertEqual(len(sp_b["first_green_start"]), 3)
+        self.assertTrue(any(v > 0 for v in sp_b["first_green_start"]))
+        # The single-point plan must NOT be phase-shifted.
+        sp_a = by_scheme["webster"]["signal_program"]
+        self.assertEqual(sp_a["first_green_start"], [0.0, 0.0, 0.0])
+        # Same Webster timing underneath both plans.
+        self.assertAlmostEqual(sp_a["cycle_length"], sp_b["cycle_length"], places=1)
+
+    def test_phase_alignment_math(self):
+        """Signal-phase alignment: arterial green must start exactly at the requested offset.
+
+        This is the mechanism that realises the green-wave offset without TraCI offset
+        support, so its correctness is load-bearing for the coordinated strategy.
+        """
+        from src.simulation.sumo_sandbox import _compute_phase_alignment
+
+        C = 45.0
+        durs = [24.0, 4.0, 13.0, 4.0]  # arterial / yellow / cross / yellow
+
+        # Offset 0 -> phase 0 begins at t=0 with the full green left to run.
+        idx, rem = _compute_phase_alignment(C, durs, 0.0)
+        self.assertEqual(idx, 0)
+        self.assertAlmostEqual(rem, 24.0)
+
+        # Offset 21.6 -> program sits 23.4 s into its cycle: 0.6 s of green remain,
+        # then yellow+cross+yellow, so the arterial green starts 21.6 s later.
+        idx, rem = _compute_phase_alignment(C, durs, 21.6)
+        self.assertEqual(idx, 0)
+        self.assertAlmostEqual(rem, 0.6)
+        self.assertAlmostEqual(rem + 4 + 13 + 4, 21.6)
+
+        # Offset 5.0 -> inside the cross-street green (1 s left, then a 4 s yellow).
+        idx, rem = _compute_phase_alignment(C, durs, 5.0)
+        self.assertEqual(idx, 2)
+        self.assertAlmostEqual(rem, 1.0)
+        self.assertAlmostEqual(rem + 4, 5.0)
+
+    def test_webster_plan_matches_network_phase_structure(self):
+        """The deployed plan must match the network's signal structure (2 release phases).
+
+        Guard for the "Webster computed 4 phases against a 2-phase network" defect:
+        the plan's phase count must equal the corridor's actual release phases, the
+        clock cycle of the deployed program must equal the planned design cycle, and
+        the plan must keep the adaptive (actuated) bounds so the controller can respond
+        to the incident (static timing can never beat the adaptive baseline it replaces).
+        """
+        plan = self.agent._tool_plan(None)
+        timing = plan["timing"]
+        self.assertEqual(len(timing["green_splits"]), 2)
+
+        sp = plan["signal_program"]
+        clock_cycle = sp["green_main"] + 2 * sp["yellow"] + sp["green_cross"]
+        self.assertAlmostEqual(clock_cycle, sp["cycle_length"], places=1)
+        self.assertAlmostEqual(sp["cycle_length"], plan["actual_cycle"], places=1)
+
+        # Over-saturation correction: design cycle = 2x Webster minimum, clamped to [60, 120].
+        expected_cycle = min(120.0, max(60.0, round(timing["optimal_cycle"] * 2.0)))
+        self.assertAlmostEqual(sp["cycle_length"], expected_cycle, places=0)
+
+        # The controller must stay adaptive: type actuated with real min/max bounds.
+        self.assertEqual(sp["type"], "actuated")
+        self.assertLess(sp["min_green_main"], sp["green_main"])
+        self.assertGreater(sp["max_green_main"], sp["green_main"])
+        self.assertLess(sp["min_green_cross"], sp["green_cross"])
+        self.assertGreater(sp["max_green_cross"], sp["green_cross"])
 
     def test_no_fabricated_kpis_when_rollout_is_missing(self):
         """P0-2 guard: the brief must declare missing data instead of inventing numbers."""

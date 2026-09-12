@@ -56,6 +56,161 @@ except ImportError:
     traci = None
     sumolib = None
 
+# TraCI classes needed to deploy a complete signal program (Logic/Phase).
+# Import paths differ across SUMO releases, so probe the known locations.
+_TLSLogic = None
+_TLSPhase = None
+if traci is not None:
+    try:
+        from traci._trafficlight import Logic as _TLSLogic  # SUMO >= 1.20 layout
+    except ImportError:
+        try:
+            from traci.trafficlight import Logic as _TLSLogic  # legacy layout
+        except ImportError:
+            _TLSLogic = None
+    try:
+        from sumolib.net import Phase as _TLSPhase
+    except ImportError:
+        _TLSPhase = None
+
+
+def _compute_phase_alignment(
+    cycle_length: float,
+    phase_durations: List[float],
+    first_green_start: float,
+) -> "tuple[int, float]":
+    """
+    Fast-forwards a cycle-based signal program so that its arterial green (phase 0)
+    is due to *start* exactly ``first_green_start`` seconds after the simulation begins.
+
+    This is how a green-wave offset is realised without TraCI ``offset`` support:
+    at t=0 the program is moved to the point of its cycle it would occupy had it been
+    running with that offset all along.
+
+    Example: C=45, durations=[24, 4, 13, 4], first_green_start=21.6
+      -> the program must sit at 45-21.6 = 23.4 s of its cycle at t=0,
+         i.e. inside phase 0 with 24-23.4 = 0.6 s of green left to run;
+         the next arterial green starts 0.6+4+13+4 = 21.6 s later.
+
+    Returns (phase_index, remaining_seconds_of_that_phase).
+    """
+    if cycle_length <= 0 or not phase_durations:
+        return 0, 0.0
+    pos = (cycle_length - (first_green_start % cycle_length)) % cycle_length
+    acc = 0.0
+    for idx, dur in enumerate(phase_durations):
+        if pos < acc + dur:
+            return idx, acc + dur - pos
+        acc += dur
+    # Floating-point edge (pos == cycle end): restart from phase 0.
+    return 0, float(phase_durations[0])
+
+
+def _deploy_signal_program(
+    conn,
+    tl_ids,
+    tls_list,
+    signal_program: Dict[str, Any],
+) -> "tuple[int, List[Dict[str, Any]], List[str]]":
+    """
+    Deploys the arterial signal program exactly ONCE, before the simulation steps.
+
+    * The program replaces the network default, so the control the strategy claims is the
+      control that actually runs; the phase states (link semantics) are taken verbatim
+      from the network so connections stay valid.
+    * ``type`` selects the controller: ``"actuated"`` keeps the adaptive min/max-green
+      behaviour (required for the incident scenario, where demand shifts sharply between
+      approaches) while ``"static"`` runs the fixed Webster plan.
+    * The green-wave offset is realised by phase alignment (see
+      :func:`_compute_phase_alignment`) — a one-shot fast-forward, not a runtime hack.
+
+    Returns (deployed_count, evidence_rows, error_messages).
+    """
+    deployed = 0
+    evidence: List[Dict[str, Any]] = []
+    errors: List[str] = []
+
+    if _TLSLogic is None or _TLSPhase is None:
+        return 0, evidence, ["TraCI Logic/Phase classes unavailable in this environment"]
+
+    green_main = float(signal_program.get("green_main") or 0.0)
+    green_cross = float(signal_program.get("green_cross") or 0.0)
+    yellow = float(signal_program.get("yellow") or 4.0)
+    first_green_starts = [float(s) for s in (signal_program.get("first_green_start") or [])]
+    prog_type = str(signal_program.get("type") or "static").lower()
+    logic_type = 3 if prog_type == "actuated" else 0  # 0=static, 3=actuated
+
+    # Actuated controllers bound each green by min/max duration; absent bounds mean the
+    # phase duration is also its min and max (i.e. a fixed green).
+    def _bound(key: str, fallback: float) -> float:
+        value = signal_program.get(key)
+        return float(value) if value else float(fallback)
+
+    program_id = "dss_signal"
+    cycle = green_main + 2.0 * yellow + green_cross
+
+    for idx, tl_id in enumerate(tl_ids):
+        if tl_id not in tls_list:
+            errors.append(f"{tl_id}: not present in the network")
+            continue
+        try:
+            base_logics = conn.trafficlight.getAllProgramLogics(tl_id)
+            if not base_logics or len(base_logics[0].phases) < 4:
+                errors.append(f"{tl_id}: signal program has no 4-phase structure to map onto")
+                continue
+            base = base_logics[0]
+
+            # Keep the network's own link-state strings; replace only the durations.
+            new_phases = [
+                _TLSPhase(
+                    green_main,
+                    base.phases[0].state,  # arterial green
+                    _bound("min_green_main", green_main),
+                    _bound("max_green_main", green_main),
+                ),
+                _TLSPhase(yellow, base.phases[1].state),  # yellow
+                _TLSPhase(
+                    green_cross,
+                    base.phases[2].state,  # cross-street green
+                    _bound("min_green_cross", green_cross),
+                    _bound("max_green_cross", green_cross),
+                ),
+                _TLSPhase(yellow, base.phases[3].state),  # yellow
+            ]
+
+            logic = _TLSLogic(program_id, logic_type, 0, new_phases)
+            conn.trafficlight.setProgramLogic(tl_id, logic)
+            conn.trafficlight.setProgram(tl_id, program_id)
+
+            t_start = first_green_starts[idx] if idx < len(first_green_starts) else 0.0
+            phase_idx, remaining = _compute_phase_alignment(
+                cycle, [p.duration for p in new_phases], t_start
+            )
+            conn.trafficlight.setPhase(tl_id, phase_idx)
+            conn.trafficlight.setPhaseDuration(tl_id, remaining)
+
+            deployed += 1
+            evidence.append({
+                "tls": tl_id,
+                "program_id": program_id,
+                "program_type": prog_type,
+                "cycle_length": round(cycle, 1),
+                "green_main": round(green_main, 1),
+                "green_cross": round(green_cross, 1),
+                "yellow": round(yellow, 1),
+                "min_green_main": round(_bound("min_green_main", green_main), 1),
+                "max_green_main": round(_bound("max_green_main", green_main), 1),
+                "min_green_cross": round(_bound("min_green_cross", green_cross), 1),
+                "max_green_cross": round(_bound("max_green_cross", green_cross), 1),
+                "arterial_green_first_start_s": round(t_start, 1),
+                "aligned_phase_index": phase_idx,
+                "aligned_phase_remaining_s": round(remaining, 1),
+            })
+        except Exception as exc:  # pragma: no cover - reported through evidence
+            errors.append(f"{tl_id}: {type(exc).__name__}: {exc}")
+
+    return deployed, evidence, errors
+
 
 class SumoSimulationSandbox:
     """
@@ -141,11 +296,20 @@ class SumoSimulationSandbox:
         reroute_errors: List[str] = []
         diversion_decided: set = set()
 
-        # Arterial progression plan (computed by the green-wave tool and forwarded here).
-        gw_offsets = [float(o) for o in (control_params.get("green_wave_offsets") or [])]
-        cycle_length = max(1.0, float(control_params.get("cycle_length") or 90.0))
-        arterial_green = max(1.0, float(control_params.get("arterial_green") or 45.0))
-        arterial_phase = int(control_params.get("arterial_phase", 0))
+        # Arterial signal program (Webster timing + optional green-wave alignment),
+        # deployed ONCE before the stepping loop starts.
+        #
+        # NOTE on the previous failure mode: an earlier implementation mutated the
+        # duration of a single phase from inside the stepping loop (`setPhaseDuration`
+        # every 30 s). For an `actuated` logic that repeatedly resets the phase timer
+        # and corrupts the right-of-way — which is why the Webster-only strategy used
+        # to perform *worse* than the fixed-time baseline. The program is now deployed
+        # as a complete static plan, exactly once.
+        signal_program = control_params.get("signal_program") or {}
+        sp_green_main = float(signal_program.get("green_main") or 0.0)
+        sp_green_cross = float(signal_program.get("green_cross") or 0.0)
+        sp_yellow = float(signal_program.get("yellow") or 4.0)
+        sp_first_green_starts = [float(s) for s in (signal_program.get("first_green_start") or [])]
 
         # Control-actuation accounting: proves which controls actually reached the simulator.
         signal_commands = 0
@@ -188,6 +352,22 @@ class SumoSimulationSandbox:
             bottleneck_edge = "J1_J2"
             incident_lanes = (f"{bottleneck_edge}_0", f"{bottleneck_edge}_1")
 
+            # ---- One-shot signal program deployment (before the first step) -------- #
+            # The Webster-based plan replaces the network default; when the green wave is
+            # active each junction's cycle is fast-forwarded so the arterial green starts
+            # at the coordinated offset. Nothing modifies the signals from inside the loop.
+            sp_deployed = 0
+            sp_evidence: List[Dict[str, Any]] = []
+            sp_errors: List[str] = []
+            if webster_on and sp_green_main > 0 and sp_green_cross > 0:
+                sp_deployed, sp_evidence, sp_errors = _deploy_signal_program(
+                    conn,
+                    ("J1", "J2", "J3"),
+                    tls_list,
+                    signal_program,
+                )
+                signal_commands = sp_deployed
+
             for step in range(duration):
                 # 1. Inject Incident (Bottleneck collision/blockage on J1_J2)
                 if not incident_injected and step >= incident_start:
@@ -210,28 +390,12 @@ class SumoSimulationSandbox:
                             pass
                     incident_cleared = True
 
-                # 2. Dynamic Signal Control
-                #    (a) green_wave_on -> arterial progression: every junction's arterial
-                #        green begins at t ≡ offset (mod C), which forms the coordinated band.
-                #    (b) webster_on alone -> single-point adaptive green timing.
-                if step > 60 and (green_wave_on or webster_on):
-                    for idx, tl_id in enumerate(("J1", "J2", "J3")):
-                        if tl_id not in tls_list:
-                            continue
-                        try:
-                            if green_wave_on and gw_offsets:
-                                offset = gw_offsets[idx % len(gw_offsets)]
-                                phase_pos = (step - int(round(offset))) % int(round(cycle_length))
-                                if phase_pos == 0:
-                                    conn.trafficlight.setPhase(tl_id, arterial_phase)
-                                    conn.trafficlight.setPhaseDuration(tl_id, arterial_green)
-                                    signal_commands += 1
-                            elif webster_on and step % 30 == 0:
-                                if conn.trafficlight.getPhase(tl_id) == arterial_phase:
-                                    conn.trafficlight.setPhaseDuration(tl_id, arterial_green)
-                                    signal_commands += 1
-                        except Exception:
-                            pass
+                # 2. Signal control: nothing here by design.
+                #    The Webster program (and the green-wave phase alignment) was deployed
+                #    once before the loop began. Mutating phase durations from inside the
+                #    stepping loop is exactly the defect that used to corrupt an actuated
+                #    signal's right-of-way; the control evidence below records what was
+                #    actually deployed, not what was attempted.
 
                 # 3. Dynamic Rerouting via VMS (deterministic, reproducible assignment)
                 if reroute_threshold > 0 and step >= incident_start:
@@ -264,6 +428,13 @@ class SumoSimulationSandbox:
 
                 # Step the simulation
                 conn.simulationStep()
+
+                # `getArrivedNumber()` reports arrivals during the *last* step only, so the
+                # total must be accumulated step by step. Sampling it once after the loop
+                # (as an earlier revision did) returned the final step's count — usually 0 —
+                # which made the throughput KPI meaningless (4 "completed trips" reported
+                # while the tripinfo file held 977).
+                completed_vehicles += conn.simulation.getArrivedNumber()
 
                 # Collect metrics every 5 seconds
                 if step % 5 == 0:
@@ -301,8 +472,6 @@ class SumoSimulationSandbox:
                     bottleneck_speeds.append(round(mean_speed_kmh, 1))
                     network_delays.append(round(avg_delay, 1))
 
-            completed_vehicles = conn.simulation.getArrivedNumber()
-
         finally:
             try:
                 conn.close()
@@ -323,11 +492,16 @@ class SumoSimulationSandbox:
             "total_fuel_ml": total_fuel,
             "control_evidence": {
                 "scheme": scheme,
-                "webster_applied": webster_on,
-                "green_wave_applied": bool(green_wave_on and gw_offsets),
-                "green_wave_offsets": gw_offsets,
-                "cycle_length": cycle_length,
-                "arterial_green": arterial_green,
+                "webster_applied": bool(webster_on and sp_deployed > 0),
+                "webster_program_deployed": sp_deployed,
+                "webster_program_detail": sp_evidence,
+                "webster_program_errors": sp_errors,
+                "green_wave_applied": bool(green_wave_on and sp_first_green_starts),
+                "green_wave_first_green_start_s": sp_first_green_starts,
+                "cycle_length": round(sp_green_main + 2 * sp_yellow + sp_green_cross, 1),
+                "arterial_green": sp_green_main,
+                "cross_green": sp_green_cross,
+                "yellow": sp_yellow,
                 "reroute_ratio_applied": reroute_ratio,
                 "reroute_source_edge": approach_edge,
                 "signal_commands": signal_commands,
