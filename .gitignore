@@ -39,9 +39,14 @@ Desktop.ini
 .DS_Store
 
 # Local competition notices, internal drafts and submission templates (kept locally only)
-*.pdf
+# 说明：本组规则用于隔离「本地赛事材料」，避免内部通知/草稿进入公开仓库。
+#      正式交付物（作品说明书、申报书等 PDF）请放入 docs/ 目录 —— 该目录下的 PDF 已开例外，
+#      不会被下面的通配规则忽略，可正常提交。
 附件*
 *通知*
 agent.md
 docs/*_draft.md
 docs/competition_guide.md
+# 其余位置的 PDF 视为本地材料；docs/ 下的正式 PDF 例外放行
+*.pdf
+!docs/*.pdf

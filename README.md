@@ -3,7 +3,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Simulation-SUMO](https://img.shields.io/badge/Simulation-SUMO%20%2F%20TraCI-brightgreen.svg)](https://eclipse.dev/sumo/)
-[![Architecture-LLM%20Agent](https://img.shields.io/badge/Architecture-LLM%20Agent%20%26%20MAS-orange.svg)](https://github.com/)
+[![Architecture-LLM%20Agent](https://img.shields.io/badge/Architecture-LLM%20Agent%20%26%20MAS-orange.svg)](https://github.com/zhutmg00-eng/TrafficAgent-DSS)
 [![Competition-ITSAC%202026](https://img.shields.io/badge/Competition-ITSAC%202026%20%E8%B5%9B%E9%A2%982-red.svg)](http://www.its-china.org.cn/)
 
 ---
@@ -127,10 +127,14 @@ TrafficAgent-DSS/
 ## 👥 6. 团队分工与近期推进路线
 
 - [x] **Step 1: 选题确立与技术路线设计**（已完成，锁定 ITSAC 赛题2 与北京市交科赛主题类）
-- [ ] **Step 2: 搭建基础路网与 SUMO 仿真沙盒**（构建典型瓶颈路网，验证 TraCI 控制接口）
-- [ ] **Step 3: 核心智能体推理引擎与工具库开发**（接入 LLM API，集成 Webster/绿波工具，实现闭环推演）
-- [ ] **Step 4: Web 决策大屏原型搭建**（实现直观的方案下发、A/B 效果对比图表）
-- [ ] **Step 5: 成果材料撰写与包装**（完成《作品申报书》、6页《作品说明书》小论文、录制演示视频与答辩PPT）
+- [x] **Step 2: 搭建基础路网与 SUMO 仿真沙盒**（已完成：`scenarios/` 走廊路网 + TraCI 沙盒，支持事故注入与限速还原）
+- [x] **Step 3: 核心智能体推理引擎与工具库开发**（已完成：大模型归因 + Webster/绿波/动态诱导工具库 + 诊断→策略→推演闭环）
+- [x] **Step 4: Web 决策大屏原型搭建**（已完成：FastAPI + 单页大屏，含方案下发与 A/B 效果对比图表）
+- [ ] **Step 5: 端到端仿真复验与指标口径校核**（待办：在安装 SUMO 的环境跑通三方案推演，核验延误/排队/排放口径）
+- [ ] **Step 6: 成果材料撰写与包装**（待办：完成《作品申报书》、6页《作品说明书》小论文、录制演示视频与答辩PPT）
+
+> ⚠️ **验证状态说明**：Step 2–4 的代码已完成且单元测试通过，但**完整的 SUMO 端到端推演尚未在安装 SUMO 的机器上复验**。
+> 在 Step 5 完成前，请勿对外引用具体推演数值（改善率、延误下降幅度等）。
 
 ---
 

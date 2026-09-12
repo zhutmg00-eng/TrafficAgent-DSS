@@ -1,23 +1,20 @@
 # Core Simulation & Data Science
+# 说明：traci / sumolib 是 SUMO 仿真器随附的 Python 绑定，运行期必须配合 SUMO 本体使用
+#      （先装 SUMO 并设置 SUMO_HOME，见 README「本地运行」）。单独 pip 安装不足以运行仿真。
 traci>=1.18.0
 sumolib>=1.18.0
 numpy>=1.23.0
-pandas>=2.0.0
-matplotlib>=3.7.0
 
 # LLM & Agent Framework
 # 说明：智能体直接使用 OpenAI 兼容 SDK 调用大模型（支持 OpenAI / DeepSeek / 通义 / Kimi 等兼容端点），
 # 并未依赖 langchain 编排框架，故不声明该依赖。未配置 LLM_API_KEY 时自动降级为确定性规则模板。
 openai>=1.30.0
+# 可选：仅用于自动加载项目根目录的 .env 配置；缺失时可直接用系统环境变量注入
+python-dotenv>=1.0.0
 
 # Web Service & APIs
 fastapi>=0.110.0
 uvicorn>=0.29.0
-httpx>=0.27.0
-plotly>=5.22.0
-
-# Utilities
-python-dotenv>=1.0.0
 pydantic>=2.7.0
-openpyxl>=3.1.0
-python-docx>=1.1.0
+# 仅测试需要：fastapi.testclient.TestClient 基于 httpx 实现
+httpx>=0.27.0
