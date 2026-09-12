@@ -6,8 +6,8 @@ pandas>=2.0.0
 matplotlib>=3.7.0
 
 # LLM & Agent Framework
-langchain>=0.2.0
-langchain-core>=0.2.0
+# 说明：智能体直接使用 OpenAI 兼容 SDK 调用大模型（支持 OpenAI / DeepSeek / 通义 / Kimi 等兼容端点），
+# 并未依赖 langchain 编排框架，故不声明该依赖。未配置 LLM_API_KEY 时自动降级为确定性规则模板。
 openai>=1.30.0
 
 # Web Service & APIs

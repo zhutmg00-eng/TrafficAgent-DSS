@@ -7,9 +7,22 @@ import os
 import sys
 import time
 import shutil
+import zlib
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 import numpy as np
+
+
+def _stable_bucket(text: str) -> int:
+    """
+    Deterministic hash for reproducible simulation.
+
+    The built-in ``hash()`` is salted per process (PYTHONHASHSEED), so using it for
+    vehicle-diversion decisions made every run produce different traffic assignment.
+    CRC32 is stable across processes and interpreters, guaranteeing that the same
+    scenario yields the same result every time.
+    """
+    return zlib.crc32(text.encode("utf-8"))
 
 # Ensure SUMO tools are importable
 def setup_sumo_env():
@@ -111,8 +124,21 @@ class SumoSimulationSandbox:
         if control_params is None:
             control_params = {}
 
-        reroute_ratio = control_params.get("reroute_ratio", 0.25 if scheme == "agent_dss" else 0.0)
-        green_wave_active = control_params.get("green_wave", scheme == "agent_dss")
+        reroute_ratio = float(
+            control_params.get("reroute_ratio", 0.25 if scheme == "agent_dss" else 0.0)
+        )
+        webster_on = bool(control_params.get("webster", scheme in ("webster", "agent_dss")))
+        green_wave_on = bool(control_params.get("green_wave", scheme == "agent_dss"))
+
+        # Arterial progression plan (computed by the green-wave tool and forwarded here).
+        gw_offsets = [float(o) for o in (control_params.get("green_wave_offsets") or [])]
+        cycle_length = max(1.0, float(control_params.get("cycle_length") or 90.0))
+        arterial_green = max(1.0, float(control_params.get("arterial_green") or 45.0))
+        arterial_phase = int(control_params.get("arterial_phase", 0))
+
+        # Control-actuation accounting: proves which controls actually reached the simulator.
+        signal_commands = 0
+        reroute_commands = 0
 
         # Generate unique connection label to allow concurrent runs
         self.port_counter += 1
@@ -167,29 +193,38 @@ class SumoSimulationSandbox:
                     except Exception:
                         pass
 
-                # 2. Dynamic Control Intervention
-                if scheme in ["webster", "agent_dss"] and step % 30 == 0 and step > 60:
-                    # Update traffic lights adaptive green
-                    for tl_id in ["J1", "J2", "J3"]:
-                        if tl_id in tls_list:
-                            # Adjust green extension if queue is large
-                            try:
-                                current_phase = conn.trafficlight.getPhase(tl_id)
-                                # If East-West arterial phase (phase 0) has heavy queue, extend green
-                                if current_phase == 0:
-                                    conn.trafficlight.setPhaseDuration(tl_id, 45.0 if scheme == "agent_dss" else 38.0)
-                            except Exception:
-                                pass
+                # 2. Dynamic Signal Control
+                #    (a) green_wave_on -> arterial progression: every junction's arterial
+                #        green begins at t ≡ offset (mod C), which forms the coordinated band.
+                #    (b) webster_on alone -> single-point adaptive green timing.
+                if step > 60 and (green_wave_on or webster_on):
+                    for idx, tl_id in enumerate(("J1", "J2", "J3")):
+                        if tl_id not in tls_list:
+                            continue
+                        try:
+                            if green_wave_on and gw_offsets:
+                                offset = gw_offsets[idx % len(gw_offsets)]
+                                phase_pos = (step - int(round(offset))) % int(round(cycle_length))
+                                if phase_pos == 0:
+                                    conn.trafficlight.setPhase(tl_id, arterial_phase)
+                                    conn.trafficlight.setPhaseDuration(tl_id, arterial_green)
+                                    signal_commands += 1
+                            elif webster_on and step % 30 == 0:
+                                if conn.trafficlight.getPhase(tl_id) == arterial_phase:
+                                    conn.trafficlight.setPhaseDuration(tl_id, arterial_green)
+                                    signal_commands += 1
+                        except Exception:
+                            pass
 
-                # 3. Dynamic Rerouting via VMS
-                if scheme == "agent_dss" and reroute_ratio > 0.0 and step >= incident_start:
-                    # Check vehicles entering entry_J1 and reroute a fraction to bypass
+                # 3. Dynamic Rerouting via VMS (deterministic, reproducible assignment)
+                if reroute_ratio > 0.0 and step >= incident_start:
+                    # Check vehicles entering entry_J1 and reroute a fixed fraction to bypass
                     try:
                         veh_ids = conn.edge.getLastStepVehicleIDs("entry_J1")
                         for vid in veh_ids:
-                            # Probabilistic diversion
-                            if hash(f"{vid}_{step}") % 100 < int(reroute_ratio * 100):
+                            if _stable_bucket(f"{vid}_{step}") % 100 < int(reroute_ratio * 100):
                                 conn.vehicle.changeRoute(vid, ["entry_div", "div_byp", "byp_mer", "mer_exit"])
+                                reroute_commands += 1
                     except Exception:
                         pass
 
@@ -238,4 +273,15 @@ class SumoSimulationSandbox:
             "completed_trips": completed_vehicles,
             "total_co2_mg": total_co2,
             "total_fuel_ml": total_fuel,
+            "control_evidence": {
+                "scheme": scheme,
+                "webster_applied": webster_on,
+                "green_wave_applied": bool(green_wave_on and gw_offsets),
+                "green_wave_offsets": gw_offsets,
+                "cycle_length": cycle_length,
+                "arterial_green": arterial_green,
+                "reroute_ratio_applied": reroute_ratio,
+                "signal_commands": signal_commands,
+                "reroute_commands": reroute_commands,
+            },
         }

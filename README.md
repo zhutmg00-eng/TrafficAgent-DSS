@@ -134,6 +134,39 @@ TrafficAgent-DSS/
 
 ---
 
+## 🔧 7. 本地运行与大模型配置
+
+### 7.1 安装与启动
+
+```bash
+pip install -r requirements.txt
+
+# 如需运行真实 SUMO 微观仿真推演，请先安装 Eclipse SUMO，
+# 并确保 sumo 可执行文件在 PATH 中（或在 .env 中指定 SUMO_HOME）
+uvicorn src.web.app:app --reload --port 8000
+```
+
+启动后访问 `http://127.0.0.1:8000` 打开决策大屏，访问 `/docs` 查看 RESTful API 文档。
+
+### 7.2 大模型（LLM）配置与降级机制
+
+系统的**归因推理与方案叙事**由大语言模型完成；**所有性能指标数值一律由交通工程工具与
+SUMO 微观仿真计算**，模型不参与任何数值生成。
+
+复制 `.env.example` 为 `.env` 后配置（任意 OpenAI 兼容端点均可）：
+
+| 变量 | 说明 |
+| :--- | :--- |
+| `LLM_API_KEY` | API 密钥 |
+| `LLM_MODEL` | 模型名，如 `gpt-4o-mini` / `deepseek-chat` |
+| `LLM_BASE_URL` | 可选，自定义端点，如 `https://api.deepseek.com/v1` |
+
+> **降级机制（重要）**：未配置密钥或模型调用失败时，系统自动降级为确定性规则模板，
+> 并在 API 响应（`reasoning_mode` / `narrative_mode`）与决策简报的
+> 「数据来源与可信度声明」中**如实标注降级状态**——不会伪造看起来合理的数据或结论。
+
+---
+
 ## 📜 许可证 (License)
 
 本项目遵循 [MIT License](LICENSE) 开源协议。

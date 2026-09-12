@@ -222,6 +222,9 @@ def get_calibrated_rollout_data(
     }
 
     return {
+        # 本数据集为标定经验数据（非 SUMO 微观仿真实测），在此显式标注来源，
+        # 避免下游决策简报将其误标为物理仿真结果。
+        "execution_mode": "calibrated_empirical_fast",
         "simulation_duration": duration,
         "incident_window": [incident_start, incident_end],
         "kpis": {
@@ -272,7 +275,14 @@ async def get_system_status():
         "architecture": "Decoupled Modern RESTful API + Responsive Dashboard",
         "agent_brain": {
             "state": "ready",
-            "model_type": "LLM Chain-of-Thought Decision Agent",
+            "model_type": "LLM Chain-of-Thought Decision Agent (OpenAI-compatible endpoint)",
+            "llm": agent.llm.describe(),
+            "reasoning_available": agent.llm.is_configured,
+            "degradation_notice": (
+                None if agent.llm.is_configured
+                else "未配置 LLM_API_KEY：归因与方案叙事将降级为确定性规则模板，"
+                     "API 响应中的 reasoning_mode / narrative_mode 会如实标注。"
+            ),
             "tools": ["Webster Signal Optimizer", "Green Wave Coordinator", "Dynamic Rerouting Allocator", "5D Performance Evaluator"]
         },
         "simulation_engine": {
