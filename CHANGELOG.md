@@ -74,20 +74,24 @@
 6. **单元测试与回归测试扩充**：
    - `tests/test_system.py` 新增 14 个回归测试用例；
    - `tests/test_web_api.py` 新增 5 个回归测试用例；
-   - 现测试套件包含 56 个单元测试，100% 自动执行通过。
+   - `tests/test_empirical_challenger_2.py` 新增 24 个极限压力挑战测试用例；
+   - 现核心自动化测试套件包含 80 个单元测试（由初始 37 项扩展至 80 项），配套 24 项极限压力测试，共计 104 项测试全部 100% 自动执行通过。
 
 ---
 
 ### 三、验证记录
 
-- **测试命令**：`py -3.10 -m unittest discover -s tests -p "test_*.py" -v`
-- **执行结果**：`56 tests passed in 0.772s (0 failures, 0 errors, 100% pass)`
+- **核心测试命令**：`py -3.10 -m unittest discover -s tests -p "test_*.py" -v`
+- **执行结果**：`80 tests passed in 1.268s (0 failures, 0 errors, 100% pass)`
+- **极限压力测试命令**：`py -3.10 -m unittest tests/test_empirical_challenger_2.py -v`
+- **执行结果**：`24 tests passed in 0.410s (0 failures, 0 errors, 100% pass)`
+- **胜利审计结论**：经独立胜利审计员（Victory Auditor）闭环法医核验，判定结论为 `VICTORY CONFIRMED`。
 - **覆盖重点**：
   - Webster 残差补偿、4 相位周期下界、零饱和流量防护；
   - 绿波纯反向相位差递进、负间距防御、零速度除零防御；
   - 动态分流自定义排队阈值、零流量拦截、未拥堵零诱导、极限 1.0 饱和度处理；
   - Evaluator 对全字段显式 `None` 的安全吸收与对比计算；
-  - SUMO 沙盒缺失可执行文件检测、PID+UUID 标签隔离；
+  - SUMO 沙盒缺失可执行文件检测、PID+UUID 标签隔离与 5s 强制进程回收；
   - 智能体 0 分流因果描述修正、None 报告容错；
   - Web API 异常参数 HTTP 422 拦截、物理仿真异常优雅降级为标定推演、端到端 `/api/decide` 成功输出。
 
