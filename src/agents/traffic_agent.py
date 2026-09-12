@@ -127,6 +127,19 @@ class TrafficDecisionAgent:
         self.llm = LLMReasoningClient()
 
     # ------------------------------------------------------------------ #
+    # Dynamic LLM Configuration
+    # ------------------------------------------------------------------ #
+    def update_llm_config(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Hot-updates LLM client credentials and active model."""
+        return self.llm.update_config(api_key=api_key, base_url=base_url, model=model, timeout=timeout)
+
+    # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
     @staticmethod

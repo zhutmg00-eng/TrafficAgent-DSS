@@ -802,6 +802,61 @@ class TestTrafficAgentDSS(unittest.TestCase):
         self.assertTrue(_parse_bool("True"))
         self.assertFalse(_parse_bool(None, default=False))
 
+    def test_llm_client_model_extraction_and_sorting(self):
+        """Tests model ID extraction from multiple formats and smart sorting."""
+        # 1. Standard OpenAI format
+        openai_resp = {
+            "object": "list",
+            "data": [
+                {"id": "text-embedding-3-small", "object": "model"},
+                {"id": "deepseek-chat", "object": "model"},
+                {"id": "deepseek-reasoner", "object": "model"},
+                {"id": "whisper-1", "object": "model"},
+            ]
+        }
+        extracted = LLMReasoningClient._extract_model_ids_from_dict(openai_resp)
+        self.assertEqual(len(extracted), 4)
+        self.assertIn("deepseek-chat", extracted)
+
+        # Smart sorting: chat/reasoning models should be listed before embeddings/whisper
+        sorted_models = LLMReasoningClient._sort_and_filter_models(extracted)
+        self.assertTrue(sorted_models.index("deepseek-chat") < sorted_models.index("text-embedding-3-small"))
+        self.assertTrue(sorted_models.index("deepseek-reasoner") < sorted_models.index("whisper-1"))
+
+        # 2. Ollama format
+        ollama_resp = {
+            "models": [
+                {"name": "deepseek-r1:8b"},
+                {"name": "qwen2.5:14b"},
+            ]
+        }
+        ollama_extracted = LLMReasoningClient._extract_model_ids_from_dict(ollama_resp)
+        self.assertEqual(ollama_extracted, ["deepseek-r1:8b", "qwen2.5:14b"])
+
+    def test_llm_client_update_config_and_masking(self):
+        """Tests runtime hot-update of LLM credentials, model, and key masking."""
+        client = LLMReasoningClient(api_key="sk-initial12345678", model="gpt-4o-mini")
+        desc = client.describe()
+        self.assertTrue(desc["configured"])
+        self.assertTrue(desc["masked_key"].startswith("sk-"))
+        self.assertTrue(desc["masked_key"].endswith("5678"))
+        self.assertIn("***", desc["masked_key"])
+
+        # Hot-update
+        updated = client.update_config(
+            api_key="sk-new987654321",
+            base_url="https://api.deepseek.com/v1",
+            model="deepseek-chat"
+        )
+        self.assertEqual(updated["model"], "deepseek-chat")
+        self.assertEqual(updated["base_url"], "https://api.deepseek.com/v1")
+        self.assertTrue(updated["masked_key"].endswith("4321"))
+
+        # Agent passthrough
+        agent_desc = self.agent.update_llm_config(model="deepseek-reasoner")
+        self.assertEqual(agent_desc["model"], "deepseek-reasoner")
+        self.assertEqual(self.agent.llm.model, "deepseek-reasoner")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -316,10 +316,16 @@ function bindEventHandlers() {
 
   const downloadBtn = document.getElementById('downloadReportBtn');
   if (downloadBtn) downloadBtn.addEventListener('click', downloadReportMarkdown);
+
+  // Initialize LLM Switcher Modal
+  initLlmModal();
 }
 
 // Initial Data Load
 async function loadInitialData() {
+  // Check active LLM status
+  fetchLlmStatus();
+
   try {
     const res = await fetch('/api/baseline-data');
     if (res.ok) {
@@ -927,3 +933,218 @@ function showToast(message, type = 'success') {
     setTimeout(() => toast.remove(), 300);
   }, 3500);
 }
+
+// ==========================================================================
+// LLM Switcher (ccSwitch Style Model Detection & Hot-Swap)
+// ==========================================================================
+
+async function fetchLlmStatus() {
+  try {
+    const res = await fetch('/api/llm/config');
+    if (res.ok) {
+      const data = await res.json();
+      const llm = data.llm || {};
+      const brainText = document.getElementById('agentBrainStatusText');
+      if (brainText) {
+        if (llm.configured) {
+          brainText.textContent = `智能体大脑：在线 (${llm.model || 'LLM'})`;
+        } else {
+          brainText.textContent = '智能体大脑：在线 (规则降级模板)';
+        }
+      }
+    }
+  } catch (err) {
+    console.debug('Failed to fetch LLM status:', err);
+  }
+}
+
+function initLlmModal() {
+  const openBtn = document.getElementById('openLlmModalBtn');
+  const modal = document.getElementById('llmConfigModal');
+  const closeBtn = document.getElementById('closeLlmModalBtn');
+  const cancelBtn = document.getElementById('cancelLlmModalBtn');
+  const detectBtn = document.getElementById('detectModelsBtn');
+  const detectSpinner = document.getElementById('detectSpinner');
+  const detectBtnText = document.getElementById('detectBtnText');
+  const saveBtn = document.getElementById('saveLlmConfigBtn');
+  const baseUrlInput = document.getElementById('llmBaseUrlInput');
+  const apiKeyInput = document.getElementById('llmApiKeyInput');
+  const eyeBtn = document.getElementById('toggleApiKeyVisibilityBtn');
+  const modelSelect = document.getElementById('llmModelSelect');
+  const customModelInput = document.getElementById('llmCustomModelInput');
+  const statusAlert = document.getElementById('llmStatusAlert');
+  const providerTags = document.querySelectorAll('.provider-tag');
+
+  if (!openBtn || !modal) return;
+
+  function showStatus(msg, type = 'info') {
+    if (!statusAlert) return;
+    statusAlert.textContent = msg;
+    statusAlert.className = `llm-status-alert ${type}`;
+    statusAlert.style.display = 'block';
+  }
+
+  function hideStatus() {
+    if (statusAlert) statusAlert.style.display = 'none';
+  }
+
+  // Open modal & prefill current values
+  openBtn.addEventListener('click', async () => {
+    modal.style.display = 'flex';
+    hideStatus();
+    try {
+      const res = await fetch('/api/llm/config');
+      if (res.ok) {
+        const data = await res.json();
+        const llm = data.llm || {};
+        if (baseUrlInput && !baseUrlInput.value) {
+          baseUrlInput.value = llm.base_url || 'https://api.deepseek.com/v1';
+        }
+        if (customModelInput && !customModelInput.value && llm.model) {
+          customModelInput.value = llm.model;
+        }
+        if (llm.masked_key && apiKeyInput && !apiKeyInput.value) {
+          apiKeyInput.placeholder = `已配置: ${llm.masked_key}`;
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to prefill LLM config:', e);
+    }
+  });
+
+  // Close modal
+  function closeModal() {
+    modal.style.display = 'none';
+    hideStatus();
+  }
+  if (closeBtn) closeBtn.addEventListener('click', closeModal);
+  if (cancelBtn) cancelBtn.addEventListener('click', closeModal);
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) closeModal();
+  });
+
+  // Quick provider tags click
+  providerTags.forEach(tag => {
+    tag.addEventListener('click', () => {
+      const url = tag.getAttribute('data-url');
+      if (url && baseUrlInput) {
+        baseUrlInput.value = url;
+        showToast(`已填入 ${tag.textContent} 端点地址`, 'info');
+      }
+    });
+  });
+
+  // Eye toggle for password visibility
+  if (eyeBtn && apiKeyInput) {
+    eyeBtn.addEventListener('click', () => {
+      const isPwd = apiKeyInput.type === 'password';
+      apiKeyInput.type = isPwd ? 'text' : 'password';
+      eyeBtn.textContent = isPwd ? '🔒' : '👁️';
+    });
+  }
+
+  // Auto-detect models (like ccSwitch)
+  if (detectBtn) {
+    detectBtn.addEventListener('click', async () => {
+      const base_url = baseUrlInput ? baseUrlInput.value.trim() : '';
+      const api_key = apiKeyInput ? apiKeyInput.value.trim() : '';
+
+      detectBtn.disabled = true;
+      if (detectSpinner) detectSpinner.style.display = 'inline-block';
+      if (detectBtnText) detectBtnText.textContent = '正在探测服务商可用模型...';
+      hideStatus();
+
+      try {
+        const res = await fetch('/api/llm/detect-models', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ base_url, api_key })
+        });
+
+        const data = await res.json();
+        if (data.success && data.models && data.models.length > 0) {
+          if (modelSelect) {
+            modelSelect.innerHTML = '';
+            data.models.forEach(m => {
+              const opt = document.createElement('option');
+              opt.value = m;
+              opt.textContent = m;
+              if (m === data.current_model || (customModelInput && m === customModelInput.value)) {
+                opt.selected = true;
+              }
+              modelSelect.appendChild(opt);
+            });
+            if (customModelInput) {
+              customModelInput.value = modelSelect.value;
+            }
+          }
+          showStatus(`✅ 成功探测到 ${data.count} 个可用模型！已自动加载至下拉选单。`, 'success');
+          showToast(`成功探测到 ${data.count} 个模型`, 'success');
+        } else {
+          showStatus(`❌ 模型自动识别失败：${data.error || '未返回可用模型列表，请核对 Base URL 与 Key'}`, 'error');
+          showToast(data.error || '未能探测到模型', 'error');
+        }
+      } catch (err) {
+        showStatus(`❌ 网络请求异常：${err.message}`, 'error');
+        showToast('请求探测失败', 'error');
+      } finally {
+        detectBtn.disabled = false;
+        if (detectSpinner) detectSpinner.style.display = 'none';
+        if (detectBtnText) detectBtnText.textContent = '🔍 自动识别可用模型 (Auto-detect Models)';
+      }
+    });
+  }
+
+  // Model select change -> update customModelInput
+  if (modelSelect && customModelInput) {
+    modelSelect.addEventListener('change', () => {
+      if (modelSelect.value) {
+        customModelInput.value = modelSelect.value;
+      }
+    });
+  }
+
+  // Save config & hot reload
+  if (saveBtn) {
+    saveBtn.addEventListener('click', async () => {
+      const base_url = baseUrlInput ? baseUrlInput.value.trim() : '';
+      const api_key = apiKeyInput ? apiKeyInput.value.trim() : '';
+      const model = customModelInput ? customModelInput.value.trim() : (modelSelect ? modelSelect.value.trim() : '');
+
+      saveBtn.disabled = true;
+      saveBtn.textContent = '保存中...';
+
+      try {
+        const res = await fetch('/api/llm/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ base_url, api_key, model })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          showStatus(`✅ 配置已热更新并立即生效！当前模型：${data.llm.model}`, 'success');
+          showToast(`大模型已切换为：${data.llm.model}`, 'success');
+
+          const brainText = document.getElementById('agentBrainStatusText');
+          if (brainText) {
+            brainText.textContent = `智能体大脑：在线 (${data.llm.model})`;
+          }
+
+          setTimeout(() => {
+            closeModal();
+          }, 600);
+        } else {
+          showStatus('保存配置失败，请检查输入参数', 'error');
+          showToast('保存配置失败', 'error');
+        }
+      } catch (err) {
+        showStatus(`保存异常：${err.message}`, 'error');
+      } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = '💾 保存并立即生效';
+      }
+    });
+  }
+}
+

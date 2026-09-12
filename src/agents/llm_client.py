@@ -12,7 +12,7 @@ OpenAI-compatible chat client wrapper with explicit, auditable degradation.
 import json
 import os
 import re
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 def _load_dotenv_if_available() -> None:
@@ -64,7 +64,7 @@ class LLMReasoningClient:
         self.last_error: Optional[str] = None
 
     # ------------------------------------------------------------------ #
-    # Status helpers
+    # Status & Configuration helpers
     # ------------------------------------------------------------------ #
     @property
     def is_configured(self) -> bool:
@@ -73,13 +73,220 @@ class LLMReasoningClient:
 
     def describe(self) -> Dict[str, Any]:
         """Non-sensitive description for health/status endpoints."""
+        masked_key = None
+        if self.api_key:
+            if len(self.api_key) <= 8:
+                masked_key = "sk-***"
+            else:
+                masked_key = f"{self.api_key[:3]}***{self.api_key[-4:]}"
+
         return {
             "configured": self.is_configured,
-            "model": self.model if self.is_configured else None,
+            "model": self.model,
             "base_url": self.base_url or "https://api.openai.com/v1",
             "sdk_installed": self._sdk() is not None,
             "last_error": self.last_error,
+            "masked_key": masked_key,
         }
+
+    def update_config(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Hot-updates the LLM client credentials and active model at runtime.
+        Returns the updated describe() dictionary.
+        """
+        if api_key is not None:
+            self.api_key = api_key.strip()
+        if base_url is not None:
+            b = base_url.strip().rstrip("/")
+            self.base_url = b if b else None
+        if model is not None and model.strip():
+            self.model = model.strip()
+        if timeout is not None:
+            try:
+                self.timeout = max(1.0, float(timeout))
+            except (ValueError, TypeError):
+                pass
+        self.last_error = None
+        return self.describe()
+
+    # ------------------------------------------------------------------ #
+    # Model Auto-Discovery (ccSwitch-style /v1/models detection)
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _extract_model_ids_from_dict(data: Any) -> List[str]:
+        """Extracts model IDs from OpenAI, Ollama, or custom /v1/models response formats."""
+        if not data:
+            return []
+
+        ids: List[str] = []
+        # Format 1: Standard OpenAI {"data": [{"id": "gpt-4o", ...}, ...]}
+        if isinstance(data, dict):
+            items = data.get("data") or data.get("models") or []
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict):
+                        m_id = item.get("id") or item.get("name") or item.get("model")
+                        if m_id:
+                            ids.append(str(m_id).strip())
+                    elif isinstance(item, str) and item.strip():
+                        ids.append(item.strip())
+            # Format 2: Direct model dict or array
+            elif isinstance(data.get("model"), str):
+                ids.append(data["model"].strip())
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    m_id = item.get("id") or item.get("name")
+                    if m_id:
+                        ids.append(str(m_id).strip())
+                elif isinstance(item, str) and item.strip():
+                    ids.append(item.strip())
+
+        return ids
+
+    @classmethod
+    def _sort_and_filter_models(cls, models: List[str]) -> List[str]:
+        """
+        Deduplicates and sorts models intelligently:
+        Prioritizes chat / instruction / reasoning models at the top.
+        """
+        seen = set()
+        deduped = []
+        for m in models:
+            if m and m not in seen:
+                seen.add(m)
+                deduped.append(m)
+
+        chat_keywords = (
+            "chat", "reasoner", "deepseek", "gpt-4", "gpt-3.5", "qwen", "claude",
+            "llama", "glm", "mistral", "yi-", "kimi", "moonshot", "instruct", "o1"
+        )
+        non_chat_keywords = ("embed", "embedding", "tts", "whisper", "dall-e", "moderation", "rerank")
+
+        primary_chat = []
+        secondary = []
+        auxiliary = []
+
+        for m in deduped:
+            m_lower = m.lower()
+            if any(k in m_lower for k in non_chat_keywords):
+                auxiliary.append(m)
+            elif any(k in m_lower for k in chat_keywords):
+                primary_chat.append(m)
+            else:
+                secondary.append(m)
+
+        primary_chat.sort()
+        secondary.sort()
+        auxiliary.sort()
+
+        return primary_chat + secondary + auxiliary
+
+    @classmethod
+    def list_available_models(
+        cls,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        timeout: float = 12.0,
+    ) -> Tuple[List[str], Optional[str]]:
+        """
+        Queries an OpenAI-compatible /v1/models endpoint to auto-detect available models.
+        Dual-track implementation: attempts OpenAI SDK first, gracefully falls back to raw HTTP.
+
+        Returns:
+            (model_ids: List[str], error: Optional[str])
+        """
+        key = (api_key or os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+        url = (base_url or os.getenv("LLM_BASE_URL") or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").strip().rstrip("/")
+        if not url:
+            url = "https://api.openai.com/v1"
+
+        # Track 1: Try OpenAI official SDK if available and key is present
+        openai_cls = cls._sdk()
+        if openai_cls is not None and key:
+            try:
+                sdk_client = openai_cls(api_key=key, base_url=url, timeout=timeout)
+                resp = sdk_client.models.list()
+                raw_list = []
+                data_attr = getattr(resp, "data", None)
+                if data_attr and isinstance(data_attr, list):
+                    for item in data_attr:
+                        m_id = getattr(item, "id", None) or (item.get("id") if isinstance(item, dict) else str(item))
+                        if m_id:
+                            raw_list.append(str(m_id).strip())
+                if raw_list:
+                    return cls._sort_and_filter_models(raw_list), None
+            except Exception:
+                # SDK failed or endpoint returned non-standard format; fall through to HTTP
+                pass
+
+        # Track 2: Raw HTTP probe using httpx or urllib
+        # Probe candidate endpoints (e.g. handle case where user omitted /v1)
+        if url.endswith("/models"):
+            probe_urls = [url]
+        elif url.endswith("/v1"):
+            probe_urls = [f"{url}/models"]
+        else:
+            probe_urls = [f"{url}/v1/models", f"{url}/models"]
+
+        headers = {
+            "User-Agent": "TrafficAgent-DSS/2.1 (ccSwitch-ModelDetector)",
+            "Accept": "application/json",
+        }
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+
+        last_http_err = None
+
+        # Try httpx if available
+        try:
+            import httpx
+            for p_url in probe_urls:
+                try:
+                    with httpx.Client(timeout=timeout, verify=True) as client:
+                        resp = client.get(p_url, headers=headers)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            extracted = cls._extract_model_ids_from_dict(data)
+                            if extracted:
+                                return cls._sort_and_filter_models(extracted), None
+                        elif resp.status_code in (401, 403):
+                            return [], f"API 认证失败 (HTTP {resp.status_code})：请核对 API Key 是否正确或具有访问权限。"
+                        else:
+                            last_http_err = f"HTTP {resp.status_code}: {resp.text[:120]}"
+                except Exception as exc:
+                    last_http_err = f"{type(exc).__name__}: {exc}"
+        except ImportError:
+            # Fallback to standard library urllib
+            import urllib.request
+            import urllib.error
+            for p_url in probe_urls:
+                try:
+                    req = urllib.request.Request(p_url, headers=headers)
+                    with urllib.request.urlopen(req, timeout=timeout) as resp:
+                        if resp.status == 200:
+                            raw_body = resp.read().decode("utf-8")
+                            data = json.loads(raw_body)
+                            extracted = cls._extract_model_ids_from_dict(data)
+                            if extracted:
+                                return cls._sort_and_filter_models(extracted), None
+                except urllib.error.HTTPError as he:
+                    if he.code in (401, 403):
+                        return [], f"API 认证失败 (HTTP {he.code})：请核对 API Key 是否正确或具有访问权限。"
+                    last_http_err = f"HTTP {he.code}: {he.reason}"
+                except Exception as exc:
+                    last_http_err = f"{type(exc).__name__}: {exc}"
+
+        if not key:
+            return [], "未提供 API Key，且目标端点需要鉴权后方可查询模型列表。"
+
+        return [], f"未能从端点自动识别可用模型 ({last_http_err or '未返回有效模型数据'})，请检查 Base URL 与网络连接。"
 
     # ------------------------------------------------------------------ #
     # Internals

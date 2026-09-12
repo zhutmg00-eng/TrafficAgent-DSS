@@ -346,6 +346,59 @@ class TestWebAPI(unittest.TestCase):
         self.assertTrue(data_custom["success"])
         self.assertEqual(data_custom["diagnosis"]["bottleneck_location"], "East_Corridor_Ramp")
 
+    def test_get_llm_config_endpoint(self):
+        """Tests GET /api/llm/config returns non-sensitive status and masked credentials."""
+        res = self.client.get("/api/llm/config")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["status"], "success")
+        self.assertIn("llm", data)
+        self.assertIn("model", data["llm"])
+        self.assertIn("base_url", data["llm"])
+
+    def test_post_llm_config_endpoint_updates_model(self):
+        """Tests POST /api/llm/config hot-reloads the active model and endpoint."""
+        payload = {
+            "api_key": "sk-test12345678",
+            "base_url": "https://api.deepseek.com/v1",
+            "model": "deepseek-chat"
+        }
+        res = self.client.post("/api/llm/config", json=payload)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["llm"]["model"], "deepseek-chat")
+        self.assertEqual(data["llm"]["base_url"], "https://api.deepseek.com/v1")
+        self.assertTrue(data["llm"]["configured"])
+
+    def test_post_llm_detect_models_handles_unreachable_endpoint_gracefully(self):
+        """Tests POST /api/llm/detect-models gracefully reports errors without throwing 500."""
+        payload = {
+            "api_key": "sk-dummy-key",
+            "base_url": "http://127.0.0.1:59999/v1"  # non-existent port
+        }
+        res = self.client.post("/api/llm/detect-models", json=payload)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertFalse(data["success"])
+        self.assertEqual(data["models"], [])
+        self.assertIsNotNone(data["error"])
+
+    def test_post_llm_detect_models_success_mock(self):
+        """Tests POST /api/llm/detect-models parses model list using mock."""
+        from unittest.mock import patch
+        with patch("src.agents.llm_client.LLMReasoningClient.list_available_models") as mock_list:
+            mock_list.return_value = (["deepseek-chat", "deepseek-reasoner", "gpt-4o"], None)
+            res = self.client.post("/api/llm/detect-models", json={
+                "api_key": "sk-valid-key",
+                "base_url": "https://api.deepseek.com/v1"
+            })
+            self.assertEqual(res.status_code, 200)
+            data = res.json()
+            self.assertTrue(data["success"])
+            self.assertEqual(data["count"], 3)
+            self.assertIn("deepseek-chat", data["models"])
+
 
 if __name__ == "__main__":
     unittest.main()

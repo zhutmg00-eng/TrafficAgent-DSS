@@ -4,7 +4,7 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![CI-Build](https://github.com/zhutmg00-eng/TrafficAgent-DSS/actions/workflows/ci.yml/badge.svg)](https://github.com/zhutmg00-eng/TrafficAgent-DSS/actions)
 [![Simulation-SUMO](https://img.shields.io/badge/Simulation-SUMO%20%2F%20TraCI-brightgreen.svg)](https://eclipse.dev/sumo/)
-[![Tests-104%20Passing](https://img.shields.io/badge/Tests-104%20Passed-success.svg)](tests/)
+[![Tests-110%20Passing](https://img.shields.io/badge/Tests-110%20Passed-success.svg)](tests/)
 [![Architecture-LLM%20Agent](https://img.shields.io/badge/Architecture-LLM%20Agent%20%26%20MAS-orange.svg)](https://github.com/zhutmg00-eng/TrafficAgent-DSS)
 [![Competition-ITSAC%202026](https://img.shields.io/badge/Competition-ITSAC%202026%20%E8%B5%9B%E9%A2%982-red.svg)](http://www.its-china.org.cn/)
 
@@ -157,22 +157,36 @@ uvicorn src.web.app:app --reload --port 8000
 
 启动后访问 `http://127.0.0.1:8000` 打开决策大屏，访问 `/docs` 查看 RESTful API 文档。
 
-### 7.2 大模型（LLM）配置与降级机制
+### 7.2 大模型（LLM）配置、自动识别与降级机制
 
-系统的**归因推理与方案叙事**由大语言模型完成；**所有性能指标数值一律由交通工程工具与
-SUMO 微观仿真计算**，模型不参与任何数值生成。
+系统的**态势归因推理与方案叙事**由大语言模型（LLM）完成；**所有性能指标数值一律由经典交通工程工具算子与 SUMO 微观物理仿真严格计算得出**，大模型坚决不参与任何底层数值生成，杜绝“数字幻觉”。
 
-复制 `.env.example` 为 `.env` 后配置（任意 OpenAI 兼容端点均可）：
+#### 1. 类似 ccSwitch 的动态模型自动识别与一键热切换（推荐）
 
-| 变量 | 说明 |
-| :--- | :--- |
-| `LLM_API_KEY` | API 密钥 |
-| `LLM_MODEL` | 模型名，如 `gpt-4o-mini` / `deepseek-chat` |
-| `LLM_BASE_URL` | 可选，自定义端点，如 `https://api.deepseek.com/v1` |
+系统现已原生支持**服务商模型自动识别与免重启热加载（ccSwitch 交互风格）**：
+- **Web 可视化大屏一键操作**：
+  1. 访问决策大屏顶部导航栏，点击 **`⚙️ 模型配置`** 按钮唤起配置弹窗；
+  2. 填入 **API Base URL**（如内置标签快捷填入：`https://api.deepseek.com/v1`、`https://api.siliconflow.cn/v1`、`https://api.openai.com/v1` 或本地 `http://localhost:11434/v1`）；
+  3. 输入 **API Key**（支持明文/密文安全切换）；
+  4. 点击 **`🔍 自动识别可用模型 (Auto-detect Models)`**，系统将自动连通服务商 `/v1/models` 端点探测其支持的全部可用模型（并智能优先将 Chat 与 Reasoning 模型排在前列）；
+  5. 在下拉选单中选择目标模型（如 `deepseek-chat`、`deepseek-reasoner`、`gpt-4o`、`qwen2.5`），点击 **`💾 保存并立即生效`** 即可在内存中实时热更新智能体大脑，无需重启 Python/FastAPI 后台服务！
+- **RESTful API 自动化集成**：
+  - `POST /api/llm/detect-models`：传入 `{ "base_url": "...", "api_key": "..." }`，自动返回服务商支持的全部模型 ID 列表与推荐模型；
+  - `GET /api/llm/config`：读取当前大模型连接状态、已生效模型及脱敏密钥；
+  - `POST /api/llm/config`：通过脚本或第三方调度系统动态热切换当前使用的模型与凭据。
 
-> **降级机制（重要）**：未配置密钥或模型调用失败时，系统自动降级为确定性规则模板，
-> 并在 API 响应（`reasoning_mode` / `narrative_mode`）与决策简报的
-> 「数据来源与可信度声明」中**如实标注降级状态**——不会伪造看起来合理的数据或结论。
+#### 2. 传统静态环境变量配置（可选）
+
+如需服务启动时自动加载指定凭据，可复制 `.env.example` 为 `.env` 后配置（支持任意 OpenAI 兼容端点）：
+
+| 环境变量 | 必填/可选 | 说明与示例 |
+| :--- | :--- | :--- |
+| `LLM_API_KEY` | 可选 | API 密钥，如 `sk-...` |
+| `LLM_BASE_URL` | 可选 | 自定义端点，如 `https://api.deepseek.com/v1`（留空默认官方 OpenAI） |
+| `LLM_MODEL` | 可选 | 模型名称，如 `deepseek-chat` / `gpt-4o-mini` |
+| `LLM_TIMEOUT` | 可选 | 请求超时时间（秒，默认 30.0 秒） |
+
+> 🛡️ **严格降级机制（可信度保证）**：若未配置密钥、网络断开或目标服务商接口超时，系统会自动降级为确定性专家规则模板，并在 API 响应（`reasoning_mode` / `narrative_mode`）与导出的《决策支持简报》的「数据来源与可信度声明」中**明确如实标注降级状态**——既保证演示与答辩高可用不中断，又保证科研学术诚信。
 
 ---
 

@@ -27,6 +27,7 @@ from src.tools.green_wave import GreenWaveCoordinator
 from src.tools.rerouting import DynamicReroutingAllocator
 from src.tools.evaluator import PerformanceEvaluator
 from src.agents.traffic_agent import TrafficDecisionAgent
+from src.agents.llm_client import LLMReasoningClient
 
 # Application initialization
 app = FastAPI(
@@ -134,6 +135,18 @@ class ReportExportInput(BaseModel):
 class DecisionPipelineInput(BaseModel):
     traffic_state: Optional[TrafficStateInput] = None
     rollout_config: Optional[RolloutConfigInput] = None
+
+
+class LLMDetectModelsInput(BaseModel):
+    api_key: Optional[str] = Field(default=None, description="API 密钥 (留空则使用当前已配置密钥)")
+    base_url: Optional[str] = Field(default=None, description="API Base URL (如 https://api.deepseek.com/v1)")
+
+
+class LLMConfigInput(BaseModel):
+    api_key: Optional[str] = Field(default=None, description="API 密钥")
+    base_url: Optional[str] = Field(default=None, description="API Base URL")
+    model: Optional[str] = Field(default=None, description="目标大模型 ID")
+
 
 
 # Default baseline calibrated datasets
@@ -348,6 +361,56 @@ async def get_system_status():
             "occupancy": 0.82,
             "bypass_occupancy": 0.28
         }
+    }
+
+
+@app.post("/api/llm/detect-models", summary="自动识别与探测可用大模型列表 (ccSwitch 风格)")
+async def detect_llm_models(payload: Optional[LLMDetectModelsInput] = None):
+    """
+    Queries /v1/models endpoint from the provided or current base_url and api_key,
+    auto-detecting all available model IDs.
+    """
+    input_payload = payload or LLMDetectModelsInput()
+    key = input_payload.api_key or agent.llm.api_key
+    url = input_payload.base_url or agent.llm.base_url or "https://api.openai.com/v1"
+
+    models, err = LLMReasoningClient.list_available_models(api_key=key, base_url=url)
+    return {
+        "success": err is None,
+        "models": models,
+        "count": len(models),
+        "current_model": agent.llm.model,
+        "base_url": url,
+        "error": err,
+    }
+
+
+@app.get("/api/llm/config", summary="获取当前大模型配置与状态")
+async def get_llm_config():
+    """
+    Returns non-sensitive active LLM configuration and status.
+    """
+    desc = agent.llm.describe()
+    return {
+        "status": "success",
+        "llm": desc,
+    }
+
+
+@app.post("/api/llm/config", summary="热更新并切换大模型配置")
+async def update_llm_config(payload: LLMConfigInput):
+    """
+    Hot-updates API key, base URL, and active model for the running agent.
+    """
+    desc = agent.update_llm_config(
+        api_key=payload.api_key,
+        base_url=payload.base_url,
+        model=payload.model,
+    )
+    return {
+        "success": True,
+        "llm": desc,
+        "message": f"模型配置已实时更新为: {desc.get('model')}",
     }
 
 

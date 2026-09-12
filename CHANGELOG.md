@@ -9,6 +9,40 @@
 
 ---
 
+## [2026-09-12] 智能体大模型能力升级：支持 ccSwitch 风格端点自动识别可用模型与动态热切换 (LLM Switcher)
+
+**改进范围**：实现类似 ccSwitch 的大模型端点与凭据探测机制，支持通过 Web 交互与 RESTful API 自动枚举服务商支持的模型列表，并支持运行时免重启热切换生效；配套 6 项新增回归测试（全量测试规模扩充至 110 项）。
+**影响文件**：`src/agents/llm_client.py`、`src/agents/traffic_agent.py`、`src/web/app.py`、`src/web/static/index.html`、`src/web/static/css/style.css`、`src/web/static/js/dashboard.js`、`README.md`、`tests/test_system.py`、`tests/test_web_api.py`
+**兼容性**：完全向后兼容。原 `.env` 静态加载机制及自动化降级逻辑完全保留。
+
+---
+
+### 一、功能改进动因与工程背景
+1. **服务商模型名称碎片化**：不同 OpenAI 兼容服务商（如 DeepSeek、SiliconFlow、OpenAI、Ollama、OneAPI、Moonshot、vLLM 等）支持的模型 ID 格式不一，人工核对和修改 `.env` 容易拼写错误；
+2. **免重启动态切换诉求**：科研答辩与现场展示时常需要在不同大模型之间快速切换对比推理质量，原系统需修改环境变量并重启进程，缺乏灵活性；
+3. **安全脱敏与合规**：Web 界面与 API 回显中对 API Key 实施安全脱敏遮蔽（如 `sk-***abcd`），防止前端演示时泄漏密钥。
+
+---
+
+### 二、核心改动与工程实现
+1. **模型端点自动探测引擎 (`src/agents/llm_client.py`)**：
+   - 新增 `list_available_models(api_key, base_url, timeout)`：双轨探测机制，优先尝试 OpenAI SDK，若未安装或遇到非标端点，自动优雅平滑回退至原生 HTTP 请求探测候选端点（智能兼容 `/models` 与 `/v1/models`）；
+   - 新增 `_extract_model_ids_from_dict`：多格式解析器，兼容标准 OpenAI 列表、Ollama 列表与纯数组格式；
+   - 新增 `_sort_and_filter_models`：智能过滤与优先级排序，将 Chat / Reasoning 模型置顶；
+   - 新增 `update_config` 与安全脱敏 `describe`。
+2. **智能体核心中枢 (`src/agents/traffic_agent.py`)**：
+   - 新增 `update_llm_config` 方法，支持运行时热更新大模型连接信息并实时反馈状态。
+3. **FastAPI 服务路由 (`src/web/app.py`)**：
+   - 新增 `POST /api/llm/detect-models`：传入 API Key 与 Base URL，自动连通并返回模型列表；
+   - 新增 `GET /api/llm/config`：读取当前活跃大模型状态及脱敏密钥；
+   - 新增 `POST /api/llm/config`：执行运行时大模型热切换。
+4. **Web 决策大屏拟态弹窗 (`src/web/static/`)**：
+   - 顶部导航栏新增 `⚙️ 模型配置` 入口按钮；
+   - 实现 ccSwitch 风格的模型配置弹窗，包含主流服务商一键填入快捷标签、密码显示切换、一键自动探测按钮与动态 Loading 状态反馈、模型下拉选单及自定义输入；
+   - 保存后即时热更新，顶栏指示灯实时显示当前连接的模型名称。
+
+---
+
 ## [2026-09-12] CI/CD 自动化流水线修复：前置 SUMO 路径判定保障无 TraCI 环境用例合规 (CI Fix)
 
 **改进范围**：修复 GitHub Actions CI 环境（无 TraCI/SUMO 环境）下的单元测试断言失败问题。
