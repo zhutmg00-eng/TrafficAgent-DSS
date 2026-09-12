@@ -9,6 +9,26 @@
 
 ---
 
+## [2026-09-12] CI/CD 自动化流水线修复：前置 SUMO 路径判定保障无 TraCI 环境用例合规 (CI Fix)
+
+**改进范围**：修复 GitHub Actions CI 环境（无 TraCI/SUMO 环境）下的单元测试断言失败问题。
+**影响文件**：`src/simulation/sumo_sandbox.py`
+**兼容性**：完全向后兼容。
+
+---
+
+### 一、缺陷根因与修复说明
+1. **CI 执行失败根因**：
+   - GitHub Actions runner（Ubuntu 环境）未安装 SUMO 物理模拟器与 `traci` 接口包；
+   - 单元测试 `test_sandbox_missing_sumo_binary_raises_file_not_found`（`tests/test_system.py:737`）测试传入不存在的 SUMO 路径时必须严格抛出 `FileNotFoundError`；
+   - `SumoSimulationSandbox.run_simulation()` 中原先优先检测 `traci is None`，在 CI runner 上直接触发了 `RuntimeError("TraCI is not installed or importable.")`，早于二进制文件检测，导致测试抛出的异常与预期不符引发构建失败。
+2. **修复方案**：
+   - 将 SUMO 二进制文件存在性检测（`shutil.which(self.sumo_bin)`）前置至 `run_simulation()` 方法的最顶部；
+   - 保证在无 TraCI 依赖的轻量 CI 环境或无头服务器中，针对不存在二进制路径的防御性调用均精准且统一地抛出 `FileNotFoundError`；
+   - 本地与模拟 CI 环境（`traci = None`）全量 80 项单元测试 100% 通过（0 failures, 0 errors）。
+
+---
+
 ## [2026-09-12] 全核心模块缺陷修复与系统级鲁棒性加固 (Tools / Simulation / Agents / Web)
 
 **改进范围**：覆盖全系统 4 大核心模块（`src/tools/`、`src/simulation/`、`src/agents/`、`src/web/`）的潜在缺陷治理、异常输入防御、浮点与边界安全加固、TraCI 进程生命周期与并发隔离、Web API 强类型输入校验与全链路优雅降级，以及配套 19 项回归测试。

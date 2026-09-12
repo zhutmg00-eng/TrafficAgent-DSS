@@ -282,6 +282,11 @@ class SumoSimulationSandbox:
         Returns:
           Dict containing time-series traces and aggregate performance metrics.
         """
+        # Check SUMO executable existence first
+        resolved_bin = shutil.which(self.sumo_bin) or (self.sumo_bin if Path(self.sumo_bin).exists() else None)
+        if not resolved_bin:
+            raise FileNotFoundError(f"SUMO executable not found: '{self.sumo_bin}'. Please verify SUMO installation or SUMO_HOME.")
+
         if traci is None:
             raise RuntimeError("TraCI is not installed or importable.")
 
@@ -324,11 +329,6 @@ class SumoSimulationSandbox:
         # Control-actuation accounting: proves which controls actually reached the simulator.
         signal_commands = 0
         reroute_commands = 0
-
-        # Check SUMO executable existence
-        resolved_bin = shutil.which(self.sumo_bin) or (self.sumo_bin if Path(self.sumo_bin).exists() else None)
-        if not resolved_bin:
-            raise FileNotFoundError(f"SUMO executable not found: '{self.sumo_bin}'. Please verify SUMO installation or SUMO_HOME.")
 
         # Generate unique connection label to prevent collisions under concurrency
         self.port_counter += 1
