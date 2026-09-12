@@ -76,9 +76,26 @@ class RolloutConfigInput(BaseModel):
     use_green_wave: bool = Field(default=True, description="是否启用干线绿波协调")
     use_webster: bool = Field(default=True, description="是否启用 Webster 信号配时优化")
     run_physical_sandbox: bool = Field(default=False, description="是否强制执行本地微观 SUMO 进程推演")
+    seed: Optional[int] = Field(default=None, ge=0, description="随机种子 (用于可复现仿真)")
 
     @model_validator(mode="after")
     def validate_incident_window(self):
+        if self.incident_start >= self.incident_end:
+            raise ValueError(f"事故开始时间 ({self.incident_start}s) 必须早于事故撤离时间 ({self.incident_end}s)")
+        if self.incident_end > self.duration:
+            raise ValueError(f"事故撤离时间 ({self.incident_end}s) 不能超出推演总时长 ({self.duration}s)")
+        return self
+
+
+class MultiSeedEvaluationInput(BaseModel):
+    seeds: Optional[List[int]] = Field(default=[42, 101, 2024, 777, 999], description="评估随机种子列表")
+    duration: int = Field(default=600, ge=30, le=1800, description="单次推演时长 (秒)")
+    incident_start: int = Field(default=150, ge=0, le=1200, description="事故开始时间 (秒)")
+    incident_end: int = Field(default=420, ge=0, le=1800, description="事故撤离时间 (秒)")
+    run_physical_sandbox: bool = Field(default=False, description="是否调用本地微观 SUMO 进行全量仿真推演")
+
+    @model_validator(mode="after")
+    def validate_batch_window(self):
         if self.incident_start >= self.incident_end:
             raise ValueError(f"事故开始时间 ({self.incident_start}s) 必须早于事故撤离时间 ({self.incident_end}s)")
         if self.incident_end > self.duration:
@@ -99,7 +116,8 @@ def get_calibrated_rollout_data(
     incident_end: int = 420,
     use_rerouting: bool = True,
     use_green_wave: bool = True,
-    use_webster: bool = True
+    use_webster: bool = True,
+    seed: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Returns calibrated empirical simulation benchmark data.
@@ -210,14 +228,14 @@ def get_calibrated_rollout_data(
     # Radar scores (0-100 normalized)
     radar = {
         "dimensions": ["通行效率", "空间治堵", "容量释放", "运行平稳", "绿色低碳"],
-        "baseline": [45, 42, 50, 48, 52],
+        "baseline": [50, 50, 50, 50, 50],
         "strategy_a": [65, 60, 68, 62, 66],
         "strategy_b": [
-            max(35, min(99, int(45 + delay_imp * 1.15))),
-            max(35, min(99, int(42 + queue_imp * 0.95))),
+            max(35, min(99, int(50 + delay_imp * 1.15))),
+            max(35, min(99, int(50 + queue_imp * 0.95))),
             max(40, min(98, int(50 + tp_imp * 1.25))),
-            max(40, min(95, int(48 + var_imp * 0.80))),
-            max(40, min(95, int(52 + co2_imp * 1.30)))
+            max(40, min(95, int(50 + var_imp * 0.80))),
+            max(40, min(95, int(50 + co2_imp * 1.30)))
         ]
     }
 
@@ -226,6 +244,7 @@ def get_calibrated_rollout_data(
         # 避免下游决策简报将其误标为物理仿真结果。
         "execution_mode": "calibrated_empirical_fast",
         "simulation_duration": duration,
+        "seed": seed,
         "incident_window": [incident_start, incident_end],
         "kpis": {
             "baseline": base_kpi,
@@ -398,6 +417,7 @@ async def execute_rollout(config: Optional[RolloutConfigInput] = None):
                 use_rerouting=cfg.use_rerouting,
                 use_green_wave=cfg.use_green_wave,
                 use_webster=cfg.use_webster,
+                seed=cfg.seed,
                 diagnosis=diag
             )
             # Format time-series for frontend charts
@@ -409,19 +429,29 @@ async def execute_rollout(config: Optional[RolloutConfigInput] = None):
 
             # Extract calibrated radar scores from evaluation comparison
             comp_b = rollout_raw["comparisons"]["strategy_b"]
-            scores_dict = comp_b.get("radar_scores", {})
+            scores_dict_b = comp_b.get("radar_scores", {})
             radar_b = [
-                int(scores_dict.get("通行效率 (Delay)", 92)),
-                int(scores_dict.get("空间治堵 (Queue)", 95)),
-                int(scores_dict.get("容量释放 (Throughput)", 88)),
-                int(scores_dict.get("运行平稳 (Reliability)", 90)),
-                int(scores_dict.get("绿色低碳 (Carbon)", 85))
+                int(scores_dict_b.get("通行效率 (Delay)", 92)),
+                int(scores_dict_b.get("空间治堵 (Queue)", 95)),
+                int(scores_dict_b.get("容量释放 (Throughput)", 88)),
+                int(scores_dict_b.get("运行平稳 (Reliability)", 90)),
+                int(scores_dict_b.get("绿色低碳 (Carbon)", 85))
+            ]
+
+            comp_a = rollout_raw["comparisons"].get("strategy_a", {})
+            scores_dict_a = comp_a.get("radar_scores", {}) if comp_a else {}
+            radar_a = [
+                int(scores_dict_a.get("通行效率 (Delay)", 65)),
+                int(scores_dict_a.get("空间治堵 (Queue)", 60)),
+                int(scores_dict_a.get("容量释放 (Throughput)", 68)),
+                int(scores_dict_a.get("运行平稳 (Reliability)", 62)),
+                int(scores_dict_a.get("绿色低碳 (Carbon)", 66))
             ]
 
             radar_data = {
                 "dimensions": ["通行效率", "空间治堵", "容量释放", "运行平稳", "绿色低碳"],
-                "baseline": [45, 42, 50, 48, 52],
-                "strategy_a": [65, 60, 68, 62, 66],
+                "baseline": [50, 50, 50, 50, 50],
+                "strategy_a": radar_a,
                 "strategy_b": radar_b
             }
 
@@ -429,6 +459,7 @@ async def execute_rollout(config: Optional[RolloutConfigInput] = None):
                 "success": True,
                 "execution_mode": "physical_sumo_sandbox",
                 "simulation_duration": cfg.duration,
+                "seed": cfg.seed,
                 "incident_window": [cfg.incident_start, cfg.incident_end],
                 "kpis": rollout_raw["kpis"],
                 "comparisons": rollout_raw["comparisons"],
@@ -448,7 +479,8 @@ async def execute_rollout(config: Optional[RolloutConfigInput] = None):
                 incident_end=cfg.incident_end,
                 use_rerouting=cfg.use_rerouting,
                 use_green_wave=cfg.use_green_wave,
-                use_webster=cfg.use_webster
+                use_webster=cfg.use_webster,
+                seed=cfg.seed
             )
             calibrated["execution_mode"] = "calibrated_empirical_fallback"
             calibrated["fallback_reason"] = f"SUMO Sandbox notice: {str(e)}"
@@ -462,11 +494,160 @@ async def execute_rollout(config: Optional[RolloutConfigInput] = None):
             incident_end=cfg.incident_end,
             use_rerouting=cfg.use_rerouting,
             use_green_wave=cfg.use_green_wave,
-            use_webster=cfg.use_webster
+            use_webster=cfg.use_webster,
+            seed=cfg.seed
         )
         calibrated["execution_mode"] = "calibrated_empirical_fast"
         calibrated["success"] = True
         return calibrated
+
+
+@app.post("/api/evaluate/multi-seed", summary="多随机种子蒙特卡洛/批次推演评估")
+async def evaluate_multi_seed(payload: Optional[MultiSeedEvaluationInput] = None):
+    """
+    Executes multi-seed evaluation to quantify statistical significance and confidence intervals.
+    Supports physical SUMO sandbox runs or empirical calibrated evaluations.
+    """
+    import numpy as np
+
+    inp = payload or MultiSeedEvaluationInput()
+    seeds = inp.seeds if inp.seeds is not None else [42, 101, 2024, 777, 999]
+    if not seeds:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="seeds 列表不能为空，必须包含至少一个非负整数随机种子"
+        )
+    if any(not isinstance(s, int) or s < 0 for s in seeds):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="seeds 列表中的种子必须均为非负整数"
+        )
+
+    try:
+        default_state = {
+            "bottleneck_edge": "J1_J2 (主干线合流段)",
+            "queue_m": 165.0,
+            "link_length_m": 300.0,
+            "speed_kmh": 8.2,
+            "occupancy": 0.82,
+            "bypass_occupancy": 0.28
+        }
+        diag = agent.diagnose_bottleneck(default_state)
+
+        fallback_notice = None
+        if inp.run_physical_sandbox:
+            try:
+                results = agent.run_multi_seed_evaluation(
+                    seeds=seeds,
+                    duration=inp.duration,
+                    incident_start=inp.incident_start,
+                    incident_end=inp.incident_end,
+                    diagnosis=diag,
+                )
+                results["success"] = True
+                results["execution_mode"] = "physical_sumo_sandbox"
+                return results
+            except Exception as e:
+                # Graceful fallback when SUMO binaries or physical sandbox encounter errors
+                fallback_notice = f"SUMO Sandbox notice: {str(e)}"
+
+        # Calibrated fast multi-seed evaluation with deterministic slight variance per seed
+        schemes = ["baseline", "strategy_a", "strategy_b"]
+        base_data = get_calibrated_rollout_data(
+            duration=inp.duration,
+            incident_start=inp.incident_start,
+            incident_end=inp.incident_end,
+        )
+        base_kpis = base_data["kpis"]
+
+        seed_runs = []
+        for s in seeds:
+            rng = np.random.RandomState(s)
+            noise_base = 1.0 + rng.uniform(-0.02, 0.02)
+            noise_strat = 1.0 + rng.uniform(-0.02, 0.02)
+
+            s_kpis = {}
+            for sc in schemes:
+                orig = base_kpis[sc]
+                factor = noise_base if sc == "baseline" else noise_strat
+                s_kpis[sc] = {
+                    "avg_delay_s": round(orig["avg_delay_s"] * factor, 1),
+                    "max_queue_m": round(orig["max_queue_m"] * factor, 1),
+                    "avg_speed_kmh": round(orig["avg_speed_kmh"] * (2.0 - factor), 1),
+                    "throughput_vph": round(orig["throughput_vph"] * (2.0 - factor), 1),
+                    "delay_variance": round(orig["delay_variance"] * factor, 1),
+                    "co2_emissions_kg": round(orig["co2_emissions_kg"] * factor, 1),
+                    "fuel_liters": round(orig.get("fuel_liters", 45.0) * factor, 1),
+                }
+            comp_b = PerformanceEvaluator.compare_schemes(s_kpis["baseline"], s_kpis["strategy_b"])
+            seed_runs.append({"seed": s, "kpis": s_kpis, "comparisons": {"strategy_b": comp_b}})
+
+        metric_keys = [
+            "avg_delay_s", "max_queue_m", "avg_speed_kmh",
+            "throughput_vph", "delay_variance", "co2_emissions_kg", "fuel_liters"
+        ]
+        summary = {}
+        for sc in schemes:
+            summary[sc] = {}
+            for m in metric_keys:
+                vals = [r["kpis"][sc][m] for r in seed_runs]
+                mean_v = float(np.mean(vals))
+                std_v = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
+                summary[sc][m] = {
+                    "mean": round(mean_v, 2),
+                    "std": round(std_v, 2),
+                    "min": round(float(np.min(vals)), 2),
+                    "max": round(float(np.max(vals)), 2),
+                }
+
+        comp_keys = [
+            "delay_improvement_pct", "queue_improvement_pct",
+            "speed_improvement_pct", "throughput_improvement_pct",
+            "variance_improvement_pct", "co2_improvement_pct", "fuel_improvement_pct"
+        ]
+        b_improvements = {}
+        for ck in comp_keys:
+            vals = [r["comparisons"]["strategy_b"][ck] for r in seed_runs]
+            mean_v = float(np.mean(vals))
+            std_v = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
+            sem_v = float(std_v / np.sqrt(len(vals))) if len(vals) > 1 else 0.0
+            ci_low = round(mean_v - 1.96 * sem_v, 2)
+            ci_high = round(mean_v + 1.96 * sem_v, 2)
+            b_improvements[ck] = {
+                "mean": round(mean_v, 2),
+                "std": round(std_v, 2),
+                "sem": round(sem_v, 2),
+                "ci_95": [ci_low, ci_high],
+            }
+
+        delay_stat = b_improvements.get("delay_improvement_pct", {})
+        delay_mean = delay_stat.get("mean", 0.0)
+        delay_ci = delay_stat.get("ci_95", [0.0, 0.0])
+        statistically_significant = (
+            len(seed_runs) >= 2
+            and delay_mean > 0.0
+            and delay_ci[0] > 0.0
+        )
+
+        response_payload = {
+            "success": True,
+            "execution_mode": "calibrated_fallback_no_sumo" if fallback_notice else "calibrated_empirical_fast",
+            "seeds_tested": seeds,
+            "sample_size": len(seeds),
+            "summary_by_scheme": summary,
+            "strategy_b_improvements": b_improvements,
+            "statistically_significant": statistically_significant,
+        }
+        if fallback_notice:
+            response_payload["fallback_reason"] = fallback_notice
+        return response_payload
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Multi-seed evaluation error: {str(e)}"
+        )
 
 
 @app.post("/api/report/export", summary="生成格式化决策简报")

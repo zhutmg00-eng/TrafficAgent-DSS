@@ -206,6 +206,72 @@ class TestWebAPI(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(len(response.content) > 500000)
 
+    def test_rollout_with_seed(self):
+        """Tests that rollout accepts, respects, and returns random seed."""
+        payload = {
+            "duration": 600,
+            "incident_start": 150,
+            "incident_end": 420,
+            "run_physical_sandbox": False,
+            "seed": 2026,
+        }
+        response = self.client.post("/api/rollout", json=payload)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data.get("seed"), 2026)
+
+    def test_evaluate_multi_seed_endpoint_fast(self):
+        """Tests POST /api/evaluate/multi-seed fast calibrated evaluation."""
+        payload = {
+            "seeds": [42, 101, 2024],
+            "duration": 600,
+            "incident_start": 150,
+            "incident_end": 420,
+            "run_physical_sandbox": False,
+        }
+        response = self.client.post("/api/evaluate/multi-seed", json=payload)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["sample_size"], 3)
+        self.assertEqual(data["seeds_tested"], [42, 101, 2024])
+        self.assertIn("summary_by_scheme", data)
+        self.assertIn("strategy_b_improvements", data)
+        # Verify SEM and 95% CI presence
+        delay_stat = data["strategy_b_improvements"]["delay_improvement_pct"]
+        self.assertIn("sem", delay_stat)
+        self.assertIn("ci_95", delay_stat)
+        self.assertEqual(len(delay_stat["ci_95"]), 2)
+        self.assertTrue(data["statistically_significant"])
+
+    def test_evaluate_multi_seed_validation_errors(self):
+        """Tests that invalid multi-seed inputs are rejected with 422."""
+        # Empty seeds list
+        res1 = self.client.post("/api/evaluate/multi-seed", json={"seeds": []})
+        self.assertEqual(res1.status_code, 422)
+
+        # Negative seed
+        res2 = self.client.post("/api/evaluate/multi-seed", json={"seeds": [-5, 42]})
+        self.assertEqual(res2.status_code, 422)
+
+    def test_evaluate_multi_seed_endpoint_fallback_when_sumo_fails(self):
+        """Tests that /api/evaluate/multi-seed gracefully falls back to calibrated mode if SUMO fails."""
+        from unittest.mock import patch
+        with patch("src.web.app.agent.run_multi_seed_evaluation", side_effect=RuntimeError("SUMO binary missing")):
+            payload = {
+                "seeds": [10, 20],
+                "run_physical_sandbox": True,
+            }
+            response = self.client.post("/api/evaluate/multi-seed", json=payload)
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertTrue(data["success"])
+            self.assertEqual(data["execution_mode"], "calibrated_fallback_no_sumo")
+            self.assertIn("fallback_reason", data)
+            self.assertIn("SUMO binary missing", data["fallback_reason"])
+            self.assertEqual(data["sample_size"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

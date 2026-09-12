@@ -61,21 +61,24 @@ class WebsterSignalOptimizer:
         flow_ratios = []
         for q, lanes in zip(phase_flows, phase_lanes):
             sat_flow = max(1, lanes) * self.s_per_lane
-            y = max(0.01, q / sat_flow)
+            safe_q = max(0.0, float(q))
+            y = max(0.01, safe_q / sat_flow)
             flow_ratios.append(y)
 
         Y = sum(flow_ratios)
         total_lost_time = num_phases * self.lost_time_per_phase
 
         # 2. Webster Optimal Cycle Length
+        # Minimum practical cycle must accommodate all lost times plus minimum greens for all phases
+        min_practical_cycle = max(self.min_cycle, total_lost_time + num_phases * self.min_green)
+
         # Handle oversaturated condition (Y >= 0.95)
         if Y >= 0.95:
             # Over-saturated state: cap at max practical cycle to maximize capacity
-            optimal_cycle = self.max_cycle
-            adjusted_Y = min(Y, 0.98)
+            optimal_cycle = max(min_practical_cycle, self.max_cycle)
         else:
             C_0 = (1.5 * total_lost_time + 5.0) / (1.0 - Y)
-            optimal_cycle = max(self.min_cycle, min(self.max_cycle, round(C_0)))
+            optimal_cycle = max(min_practical_cycle, min(self.max_cycle, round(C_0)))
 
         # 3. Available effective green time
         available_green = optimal_cycle - total_lost_time
@@ -106,7 +109,7 @@ class WebsterSignalOptimizer:
 
         # Degree of saturation x_i = q_i / (s_i * (g_i / C))
         degree_of_saturation = [
-            round(q / (max(1, lanes) * self.s_per_lane * (g / optimal_cycle)), 3)
+            round(max(0.0, float(q)) / (max(1, lanes) * self.s_per_lane * (max(0.1, g) / max(1.0, optimal_cycle))), 3)
             for q, lanes, g in zip(phase_flows, phase_lanes, green_splits)
         ]
 

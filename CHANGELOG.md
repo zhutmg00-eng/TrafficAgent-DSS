@@ -9,6 +9,65 @@
 
 ---
 
+## [2026-09-12] 多随机种子统计评测 + 绿波累积相位差修复 + Webster物理周期约束与端到端强化
+
+**改进范围**：完成双向干线绿波累积相位差理论修复、Webster 4相位物理周期可行性下界约束、多随机种子蒙特卡洛评测与统计学置信度（SEM & 95% CI）评定、决策简报全场景（含负向车速权衡与缺失数据防编造）精确断言、FastAPI 种子透传与 `/api/evaluate/multi-seed` 新接口落地、评测器燃油改善率与基线中立化。
+**影响文件**：`src/tools/webster.py`、`src/tools/green_wave.py`、`src/tools/rerouting.py`、`src/tools/evaluator.py`、`src/simulation/sumo_sandbox.py`、`src/agents/traffic_agent.py`、`src/web/app.py`、`tests/test_system.py`、`tests/test_web_api.py`
+**兼容性**：完全向后兼容。`seed` 参数为可选参数；`run_multi_seed_evaluation` 与 `/api/evaluate/multi-seed` 为新增接口；旧单种子仿真调用与既有 Web API 结构保持原样。
+
+---
+
+### 一、改进背景与动因
+
+在协作者重构两相位自适应配时（`6b46ef5`）及 P1 延误/路线修复（`0d53568`）之后，经过深度代码 Review 发现以下待改进点与潜在物理/数学缺陷：
+1. **干线双向绿波反向相位差数学错误**：`green_wave.py` 原实现中反向理想相位差 `ideal_reverse` 使用的是相邻路口的单段行程时间 `tt`，而非从走廊端点起算的累积旅行时间 `cum_travel_time`。导致等间距干线所有下游路口被赋予相同的反向相位差（如 68.4s），使得反向绿波带完全失真。
+2. **Webster 4相位物理可行性周期冲突**：原 `optimal_cycle` 仅受限于 `min_cycle = 45.0s`。对于 4 相位路口，总损失时间（$4 \times 3.5s = 14s$）加上各相位最小绿灯（$4 \times 10s = 40s$）达到 $54.0s > 45.0s$。在低需求流量下，周期被截断至 45s 会直接导致各相位绿灯之和与损失时间超过设计周期。
+3. **多随机种子评估缺失与单样本显著性假象**：`CHANGELOG.md` 遗留清单指明"单种子仿真无法排除随机偶然性"。原代码缺少对种子列表的空值与负值校验，且未计算标准误（SEM）与 95% 置信区间（CI），在样本量为 1 时可能误报“统计显著”。
+4. **决策简报负向优化文案歧义与子串断言误伤**：
+   - 当协调控制导致平均车速轻微下降（例如排队减慢以换取畅行绿波）时，报告曾生成矛盾表述如“车速提升 -9.5%”；
+   - 决策简报数据缺失守护测试 `test_no_fabricated_kpis_when_rollout_is_missing` 原采用全文字符串检测 `"44.6"`。在双向绿波反向累积修复后，J3 路口的交通工程推荐相位差恰为 `44.6s`，出现在方案推荐指令章节，引发了非 KPI 区域的子串误伤断言。
+5. **Web API 缺少随机种子控制与批处理评测端点**：`/api/rollout` 未透传 `seed`，且缺失批量随机种子评估接口。雷达图基线未统一为中立 50.0。
+6. **评测器燃油指标物理口径完善**：`evaluator.py` 补充计算 `fuel_improvement_pct`，且提供 neutral `baseline_radar_scores` (全 50.0)。
+
+### 二、核心改动与实现
+
+1. **`src/tools/green_wave.py`**:
+   - 彻底修复双向反向相位差计算：采用路段间行进步长加权融合（正向 $+tt$，反向 $-tt \equiv C - tt$）。在双向对等协调（0.5）下自然收敛为交通工程经典交错式系统（Alternate System: $0, C/2, 0, C/2$），确保任意间距干线沿线相位差严格递进分明，彻底解决因全走廊线性相加 $0.5 \times C = 45.0s$ 导致的下游相位差全部相同问题。
+   - `weight_forward` 限制在 `[0.0, 1.0]`，移除不合理的 `(1.0 - weight_forward) > 0.2` 硬编码限制。
+   - 增加周期 $C \le 0$ 防护，计算双向协调反向带宽与综合带宽比（`bandwidth_reverse_seconds`, `bidirectional_bandwidth_ratio_percent`）。
+2. **`src/tools/webster.py`**:
+   - 引入物理最小周期约束：`min_practical_cycle = max(self.min_cycle, total_lost_time + num_phases * self.min_green)`，彻底避免 4 相位工况下绿灯分配超出周期的物理冲突。
+   - 饱和度计算增加输入流量非负化防护与有效绿灯非负防护。
+3. **`src/agents/traffic_agent.py`**:
+   - `run_multi_seed_evaluation`: 强化入参校验，严格拒绝空列表与负数种子；标准差计算采用无偏估计 `ddof=1`；计算标准误 `sem` 与 95% 置信区间 `ci_95`；统计显著性严格要求样本数 $\ge 2$ 且 95% 置信区间下界大于 0。
+   - `execute_what_if_rollout`: 增加 `duration > 0`、`incident_start >= 0` 及 `seed >= 0` 边界校验；安全提取 `bottleneck_speeds_kmh`，对旧版沙箱或仅提供 `vehicle_speeds` 的 Mock 对象增加自动换算与缺省兜底，杜绝 `KeyError`。
+   - 决策简报 `generate_decision_report`: 完善指标对比表格，加入方差（运行平稳）与燃油（绿色低碳）；正负百分比区分呈现；新增速度指标权衡注记。
+4. **`src/simulation/sumo_sandbox.py`**:
+   - `run_simulation`: 校验 `seed` 并透传至 SUMO `--seed`，在 `control_evidence` 中记录生效种子。
+   - 限制 `reroute_ratio` 位于 `[0.0, 1.0]`。
+5. **`src/tools/evaluator.py`**:
+   - `compare_schemes` 新增 `fuel_improvement_pct` 计算，指标提取使用 `.get(key, 0.0)` 安全容错。
+   - 新增 `baseline_radar_scores` 静态方法输出全 50.0 中立分值。
+6. **`src/web/app.py`**:
+   - `RolloutConfigInput` 与 `get_calibrated_rollout_data` 支持 `seed` 参数。
+   - 新增 `MultiSeedEvaluationInput` 与 `POST /api/evaluate/multi-seed` 端点，支持物理微观仿真与极速标定两种批处理模式。当物理仿真发生异常或缺失 SUMO 二进制时，优雅降级为标定推演模式并输出 `fallback_reason`，避免 500 异常。
+   - 统一全系统雷达图 Baseline 为 `[50, 50, 50, 50, 50]`。
+7. **`tests/test_system.py` & `tests/test_web_api.py`**:
+   - 修正 `test_no_fabricated_kpis_when_rollout_is_missing` 断言作用域，既验证 What-If 表格无编造数值，又验证全文无编造成效百分比。
+   - 新增 `test_green_wave_cumulative_reverse_offset` 验证反向相位差在各路口间严格递进不同。
+   - 新增 `test_webster_four_phase_cycle_feasibility` 验证 4 相位最小周期 $\ge 54s$。
+   - 新增 `test_multi_seed_evaluation_validation_and_statistics` 验证异常种子防御与统计学指标。
+   - 新增 `test_evaluator_fuel_comparison_and_baseline_scores` 验证能耗改善与中立雷达。
+   - 新增 `test_evaluate_multi_seed_endpoint_fallback_when_sumo_fails` 验证物理仿真异常时 Web API 的优雅降级。
+   - `test_web_api.py` 新增 `test_rollout_with_seed`、`test_evaluate_multi_seed_endpoint_fast`、`test_evaluate_multi_seed_validation_errors`。
+
+### 三、验证记录
+
+- 涵盖测试：系统级全链路测试与 FastAPI 接口测试（共 35+ 个用例）。
+- 验证涵盖多随机种子蒙特卡洛推演、物理周期可行性、累积绿波反向相位差、微观沙盒 TraCI 控制、决策简报格式化与 Web API 接口。
+
+---
+
 ## [2026-09-12] 信号控制与路网相位对齐 + 三方案因果链重建 — `6b46ef5`
 
 **修复范围**：上一轮标记的「最高优先」遗留问题（信号控制与路网相位结构未对齐），

@@ -37,7 +37,14 @@ class DynamicReroutingAllocator:
         """
         Calculates optimal diversion proportion alpha in [0.0, max_diversion].
         """
-        queue_ratio = bottleneck_queue_meters / max(10.0, bottleneck_link_length)
+        bottleneck_queue_meters = max(0.0, float(bottleneck_queue_meters))
+        bottleneck_link_length = max(10.0, float(bottleneck_link_length))
+        bottleneck_occupancy = max(0.0, min(1.0, float(bottleneck_occupancy)))
+        bypass_current_occupancy = max(0.0, min(1.0, float(bypass_current_occupancy)))
+        upstream_flow_vph = max(0.0, float(upstream_flow_vph))
+        bypass_spare_capacity_vph = max(0.0, float(bypass_spare_capacity_vph))
+
+        queue_ratio = bottleneck_queue_meters / bottleneck_link_length
 
         # Condition 1: If bottleneck is healthy, zero diversion
         if bottleneck_occupancy < self.occ_thresh and queue_ratio < 0.5:
@@ -61,8 +68,8 @@ class DynamicReroutingAllocator:
 
         # Condition 3: Calculate required diversion to clear excess queue
         # Excess severity score [0.0, 1.0]
-        occ_excess = max(0.0, (bottleneck_occupancy - self.occ_thresh) / (1.0 - self.occ_thresh))
-        queue_excess = max(0.0, (queue_ratio - self.queue_thresh) / (1.0 - self.queue_thresh))
+        occ_excess = max(0.0, (bottleneck_occupancy - self.occ_thresh) / max(1e-6, 1.0 - self.occ_thresh))
+        queue_excess = max(0.0, (queue_ratio - self.queue_thresh) / max(1e-6, 1.0 - self.queue_thresh))
         severity = 0.5 * occ_excess + 0.5 * queue_excess
 
         target_diversion = min(self.max_diversion, max(0.10, severity * self.max_diversion))

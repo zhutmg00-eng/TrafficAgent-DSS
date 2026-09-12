@@ -24,11 +24,16 @@ class PerformanceEvaluator:
         """
         delays = raw_stats.get("vehicle_delays", [0.0])
         queues = raw_stats.get("queue_lengths", [0.0])
-        speeds = raw_stats.get("vehicle_speeds", [10.0])
-        co2_mg = raw_stats.get("total_co2_mg", 0.0)
-        fuel_ml = raw_stats.get("total_fuel_ml", 0.0)
-        completed_trips = raw_stats.get("completed_trips", 0)
-        sim_duration_sec = max(1.0, raw_stats.get("simulation_duration", 600.0))
+        speeds = raw_stats.get("vehicle_speeds")
+        if speeds is None and "bottleneck_speeds_kmh" in raw_stats:
+            speeds = [s / 3.6 for s in raw_stats["bottleneck_speeds_kmh"]]
+        if not speeds:
+            speeds = [10.0]
+
+        co2_mg = max(0.0, float(raw_stats.get("total_co2_mg", 0.0)))
+        fuel_mg = max(0.0, float(raw_stats.get("total_fuel_mg", raw_stats.get("total_fuel_ml", 0.0))))
+        completed_trips = max(0, int(raw_stats.get("completed_trips", 0)))
+        sim_duration_sec = max(1.0, float(raw_stats.get("simulation_duration", 600.0)))
 
         avg_delay = float(np.mean(delays)) if len(delays) > 0 else 0.0
         max_queue = float(np.max(queues)) if len(queues) > 0 else 0.0
@@ -36,7 +41,10 @@ class PerformanceEvaluator:
         throughput_vph = round(completed_trips * (3600.0 / sim_duration_sec), 1)
         tt_variance = float(np.var(delays)) if len(delays) > 1 else 0.0
         co2_kg = round(co2_mg / 1e6, 2)
-        fuel_liters = round(fuel_ml / 1e6, 2)
+        # SUMO getFuelConsumption returns mg/s; fuel mass is in mg.
+        # Density for standard gasoline is ~0.74 kg/L (740,000 mg/L).
+        fuel_liters = round((fuel_mg / 1e6) / 0.74, 2) if fuel_mg > 0 else 0.0
+        fuel_kg = round(fuel_mg / 1e6, 2)
 
         return {
             "avg_delay_s": round(avg_delay, 1),
@@ -46,6 +54,18 @@ class PerformanceEvaluator:
             "delay_variance": round(tt_variance, 1),
             "co2_emissions_kg": co2_kg,
             "fuel_liters": fuel_liters,
+            "fuel_consumption_kg": fuel_kg,
+        }
+
+    @staticmethod
+    def baseline_radar_scores() -> Dict[str, float]:
+        """Returns normalized baseline scores (all 50.0 at zero improvement)."""
+        return {
+            "通行效率 (Delay)": 50.0,
+            "空间治堵 (Queue)": 50.0,
+            "容量释放 (Throughput)": 50.0,
+            "运行平稳 (Reliability)": 50.0,
+            "绿色低碳 (Carbon)": 50.0,
         }
 
     @staticmethod
@@ -64,14 +84,18 @@ class PerformanceEvaluator:
                 return 0.0
             return round(((strat - base) / base) * 100.0, 1)
 
-        delay_improv = pct_reduction(baseline_kpi["avg_delay_s"], strategy_kpi["avg_delay_s"])
-        queue_improv = pct_reduction(baseline_kpi["max_queue_m"], strategy_kpi["max_queue_m"])
-        speed_improv = pct_increase(baseline_kpi["avg_speed_kmh"], strategy_kpi["avg_speed_kmh"])
-        throughput_improv = pct_increase(baseline_kpi["throughput_vph"], strategy_kpi["throughput_vph"])
-        variance_improv = pct_reduction(baseline_kpi["delay_variance"], strategy_kpi["delay_variance"])
-        co2_improv = pct_reduction(baseline_kpi["co2_emissions_kg"], strategy_kpi["co2_emissions_kg"])
+        delay_improv = pct_reduction(baseline_kpi.get("avg_delay_s", 0.0), strategy_kpi.get("avg_delay_s", 0.0))
+        queue_improv = pct_reduction(baseline_kpi.get("max_queue_m", 0.0), strategy_kpi.get("max_queue_m", 0.0))
+        speed_improv = pct_increase(baseline_kpi.get("avg_speed_kmh", 0.0), strategy_kpi.get("avg_speed_kmh", 0.0))
+        throughput_improv = pct_increase(baseline_kpi.get("throughput_vph", 0.0), strategy_kpi.get("throughput_vph", 0.0))
+        variance_improv = pct_reduction(baseline_kpi.get("delay_variance", 0.0), strategy_kpi.get("delay_variance", 0.0))
+        co2_improv = pct_reduction(baseline_kpi.get("co2_emissions_kg", 0.0), strategy_kpi.get("co2_emissions_kg", 0.0))
 
-        # Radar score normalized to [40, 95] for visualization
+        base_fuel = baseline_kpi.get("fuel_liters", baseline_kpi.get("fuel_consumption_kg", 0.0))
+        strat_fuel = strategy_kpi.get("fuel_liters", strategy_kpi.get("fuel_consumption_kg", 0.0))
+        fuel_improv = pct_reduction(base_fuel, strat_fuel)
+
+        # Radar score normalized to [40, 98] for visualization
         radar_scores = {
             "通行效率 (Delay)": min(98.0, max(40.0, 50.0 + delay_improv * 1.5)),
             "空间治堵 (Queue)": min(98.0, max(40.0, 50.0 + queue_improv * 1.5)),
@@ -87,6 +111,7 @@ class PerformanceEvaluator:
             "throughput_improvement_pct": throughput_improv,
             "variance_improvement_pct": variance_improv,
             "co2_improvement_pct": co2_improv,
+            "fuel_improvement_pct": fuel_improv,
             "radar_scores": radar_scores,
             "overall_effectiveness_grade": (
                 "卓越 (Level A+)" if delay_improv >= 25.0 and queue_improv >= 25.0

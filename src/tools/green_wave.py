@@ -44,35 +44,54 @@ class GreenWaveCoordinator:
         if len(green_splits_arterial) != num_nodes:
             raise ValueError(f"Expected {num_nodes} green splits for {len(intersection_distances)} links.")
 
+        safe_cycle = max(1.0, cycle_length)
+        weight_forward = max(0.0, min(1.0, weight_forward))
+
         # 1. Forward travel times
         travel_times = [d / progression_speed for d in intersection_distances]
 
         # 2. Cumulative offsets
-        offsets = [0.0]
-        for tt in travel_times:
-            next_offset = (offsets[-1] + tt) % cycle_length
-            offsets.append(round(next_offset, 1))
-
-        # 3. Bidirectional balance adjustment if needed
-        # In bidirectional coordination, if reverse weight is significant,
-        # adjust offsets to minimize reverse bandwidth penalty
-        if bidirectional and (1.0 - weight_forward) > 0.2:
-            # Check half-cycle tuning: T_travel approx k * (C / 2)
-            adjusted_offsets = [0.0]
-            for i, tt in enumerate(travel_times):
-                k = round(tt / (cycle_length / 2.0))
-                # Balanced offset
-                ideal_forward = offsets[i+1]
-                ideal_reverse = (cycle_length - (tt % cycle_length)) % cycle_length
-                blended = (weight_forward * ideal_forward + (1.0 - weight_forward) * ideal_reverse) % cycle_length
-                adjusted_offsets.append(round(blended, 1))
-            offsets = adjusted_offsets
+        if bidirectional and 0.0 < weight_forward < 1.0:
+            # In bidirectional coordination, blend forward progression (+tt) and
+            # reverse progression (-tt = C - tt) across each link.
+            # For balanced two-way progression (weight 0.5), this yields the classical alternate system (0, C/2, 0, C/2).
+            offsets = [0.0]
+            for tt in travel_times:
+                ideal_forward = tt % safe_cycle
+                ideal_reverse = (safe_cycle - (tt % safe_cycle)) % safe_cycle
+                link_step = (weight_forward * ideal_forward + (1.0 - weight_forward) * ideal_reverse) % safe_cycle
+                next_offset = (offsets[-1] + link_step) % safe_cycle
+                offsets.append(round(next_offset, 1))
+        else:
+            # Unidirectional progression
+            offsets = [0.0]
+            for tt in travel_times:
+                next_offset = (offsets[-1] + tt) % safe_cycle
+                offsets.append(round(next_offset, 1))
 
         # 4. Compute theoretical progression bandwidth
         # Bandwidth is limited by the smallest green split minus dispersion
-        min_green = min(green_splits_arterial)
-        bandwidth_forward = max(0.0, min_green - 4.0)  # accounting for platoon dispersion
-        bandwidth_ratio = round((bandwidth_forward / cycle_length) * 100.0, 1)
+        if cycle_length <= 0:
+            bandwidth_forward = 0.0
+            bandwidth_reverse = 0.0
+            bandwidth_ratio = 0.0
+            bidirectional_bandwidth_ratio = 0.0
+        else:
+            min_green = min(green_splits_arterial)
+            bandwidth_forward = max(0.0, min_green - 4.0)  # accounting for platoon dispersion
+            bandwidth_ratio = round((bandwidth_forward / cycle_length) * 100.0, 1)
+
+            # Reverse direction theoretical bandwidth under progression tuning
+            if bidirectional and weight_forward < 1.0:
+                reverse_share = 1.0 - weight_forward
+                bandwidth_reverse = max(0.0, round(bandwidth_forward * min(1.0, reverse_share / max(1e-6, weight_forward)), 1))
+            else:
+                bandwidth_reverse = 0.0
+
+            bidirectional_bandwidth_ratio = round(
+                (weight_forward * bandwidth_forward + (1.0 - weight_forward) * bandwidth_reverse) / cycle_length * 100.0,
+                1,
+            )
 
         return {
             "cycle_length": cycle_length,
@@ -81,5 +100,7 @@ class GreenWaveCoordinator:
             "travel_times": [round(tt, 1) for tt in travel_times],
             "bandwidth_seconds": round(bandwidth_forward, 1),
             "bandwidth_ratio_percent": bandwidth_ratio,
+            "bandwidth_reverse_seconds": bandwidth_reverse,
+            "bidirectional_bandwidth_ratio_percent": bidirectional_bandwidth_ratio,
             "coordination_quality": "Excellent" if bandwidth_ratio >= 35.0 else ("Good" if bandwidth_ratio >= 20.0 else "Fair")
         }

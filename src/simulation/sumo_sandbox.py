@@ -100,7 +100,11 @@ def _compute_phase_alignment(
     acc = 0.0
     for idx, dur in enumerate(phase_durations):
         if pos < acc + dur:
-            return idx, acc + dur - pos
+            rem = acc + dur - pos
+            if rem < 0.01:
+                next_idx = (idx + 1) % len(phase_durations)
+                return next_idx, float(phase_durations[next_idx])
+            return idx, round(rem, 2)
         acc += dur
     # Floating-point edge (pos == cycle end): restart from phase 0.
     return 0, float(phase_durations[0])
@@ -261,6 +265,7 @@ class SumoSimulationSandbox:
         incident_start: int = 150,
         incident_end: int = 420,
         control_params: Optional[Dict[str, Any]] = None,
+        seed: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Runs a complete headless simulation run.
@@ -269,6 +274,9 @@ class SumoSimulationSandbox:
           - 'baseline': Fixed-time signal control, no rerouting, no intervention.
           - 'webster': Adaptive signal timing based on Webster's method.
           - 'agent_dss': Coordinated Agent strategy (Webster + Arterial Green Wave + Dynamic VMS Rerouting).
+
+        Args:
+          seed: Optional random seed for reproducible multi-seed stochastic evaluation.
 
         Returns:
           Dict containing time-series traces and aggregate performance metrics.
@@ -282,6 +290,7 @@ class SumoSimulationSandbox:
         reroute_ratio = float(
             control_params.get("reroute_ratio", 0.25 if scheme == "agent_dss" else 0.0)
         )
+        reroute_ratio = max(0.0, min(1.0, reroute_ratio))
         webster_on = bool(control_params.get("webster", scheme in ("webster", "agent_dss")))
         green_wave_on = bool(control_params.get("green_wave", scheme == "agent_dss"))
 
@@ -327,7 +336,17 @@ class SumoSimulationSandbox:
             "--collision.action", "none",
             "--waiting-time-memory", "1000",
         ]
+        safe_seed = None
+        if seed is not None:
+            try:
+                safe_seed = int(seed)
+                if safe_seed < 0:
+                    raise ValueError(f"seed must be non-negative, got {seed}")
+            except (ValueError, TypeError) as err:
+                raise ValueError(f"Invalid random seed: {seed} ({err})")
+            cmd.extend(["--seed", str(safe_seed)])
 
+        conn = None
         traci.start(cmd, label=label)
         conn = traci.getConnection(label)
 
@@ -473,14 +492,16 @@ class SumoSimulationSandbox:
                     network_delays.append(round(avg_delay, 1))
 
         finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
         return {
             "scheme": scheme,
             "simulation_duration": duration,
+            "seed": safe_seed,
             "time_stamps": time_stamps,
             "queue_lengths": bottleneck_queues,
             "vehicle_speeds": [s / 3.6 for s in bottleneck_speeds],  # in m/s for evaluator
@@ -489,9 +510,11 @@ class SumoSimulationSandbox:
             "delay_metric": "mean_vehicle_time_loss_s_per_veh (SUMO tripinfo `timeLoss` definition)",
             "completed_trips": completed_vehicles,
             "total_co2_mg": total_co2,
-            "total_fuel_ml": total_fuel,
+            "total_fuel_mg": total_fuel,
+            "total_fuel_ml": total_fuel,  # legacy compatibility alias
             "control_evidence": {
                 "scheme": scheme,
+                "seed": safe_seed,
                 "webster_applied": bool(webster_on and sp_deployed > 0),
                 "webster_program_deployed": sp_deployed,
                 "webster_program_detail": sp_evidence,
