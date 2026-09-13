@@ -517,22 +517,76 @@ class TestTrafficAgentDSS(unittest.TestCase):
         self.assertEqual(kpi["co2_emissions_kg"], 230.0)
 
     def test_green_wave_cumulative_reverse_offset(self):
-        """Checks that reverse progression uses cumulative travel times across links."""
-        # 3 links of 300m each at 13.89 m/s (travel time 21.6s each)
+        """
+        Phase offsets must be derived from the CUMULATIVE travel time from the corridor
+        origin, blended between the forward and reverse ideals exactly once.
+
+        Regression guard: an earlier revision blended each link's own travel time and then
+        accumulated the blended step. That applies the weighting once per link, so on an
+        equidistant arterial the offsets grow linearly — J3 landed on 80.6 s instead of the
+        physically correct 49.0 s, which pushed the coordinated platoon past every
+        downstream green (measured: strategy-B delay 27.3 -> 21.1 s/veh after the fix).
+
+        Note on the assertion style: "consecutive offsets must differ" is NOT a valid
+        property. It only holds in the special case tt == C/2 (the classical alternate
+        system); for tt != C/2 the correct symmetric compromise is every junction sitting
+        on the circular midpoint of the two ideals, which yields equal offsets. The tests
+        below therefore assert the defining physical properties instead.
+        """
+        C = 90.0
+        tt = 300.0 / 13.89  # 21.6 s per link
         gw = GreenWaveCoordinator(default_progression_speed=13.89)
-        res = gw.compute_offsets(
-            intersection_distances=[300.0, 300.0, 300.0],
-            cycle_length=90.0,
-            green_splits_arterial=[45.0, 45.0, 45.0, 45.0],
-            bidirectional=True,
-            weight_forward=0.5,
-        )
-        offsets = res["offsets"]
-        # Offsets should be strictly progressive and distinct
-        self.assertEqual(len(offsets), 4)
-        self.assertEqual(offsets[0], 0.0)
-        self.assertNotEqual(offsets[1], offsets[2])
-        self.assertNotEqual(offsets[2], offsets[3])
+
+        def offsets_for(weight: float, bidirectional: bool = True):
+            res = gw.compute_offsets(
+                intersection_distances=[300.0] * 3,
+                cycle_length=C,
+                green_splits_arterial=[45.0] * 4,
+                bidirectional=bidirectional,
+                weight_forward=weight,
+            )
+            return res["offsets"]
+
+        def circ_dist(a: float, b: float) -> float:
+            d = abs(a - b) % C
+            return min(d, C - d)
+
+        n = 4
+        forward_ideal = [round((i * tt) % C, 1) for i in range(n)]
+        reverse_ideal = [round((C - i * tt) % C, 1) for i in range(n)]
+
+        # 1. Pure forward progression must reproduce the textbook i * tt exactly.
+        self.assertEqual(offsets_for(1.0), forward_ideal)
+
+        # 2. Pure reverse progression (weight 0.0) must be the mirrored ideal.
+        self.assertEqual(offsets_for(0.0), reverse_ideal)
+
+        # 3. A forward-biased bidirectional plan (weight 0.6) must place EVERY offset
+        #    strictly closer to the forward ideal than to the reverse ideal. The old
+        #    linear-growth defect failed this check from the third junction onwards
+        #    (80.6 s sits closer to the reverse ideal, despite the 0.6 forward weight).
+        blended = offsets_for(0.6)
+        self.assertEqual(len(blended), n)
+        self.assertEqual(blended[0], 0.0)
+        for i, off in enumerate(blended):
+            self.assertLessEqual(0.0, off)
+            self.assertLess(off, C)
+            if i == 0:
+                continue
+            self.assertLess(
+                circ_dist(off, forward_ideal[i]),
+                circ_dist(off, reverse_ideal[i]),
+                msg=f"junction J{i + 1}: offset {off}s is not forward-biased",
+            )
+
+        # 4. A balanced plan (weight 0.5) sits on the circular midpoint of the two ideals.
+        for i, off in enumerate(offsets_for(0.5)):
+            self.assertAlmostEqual(
+                circ_dist(off, forward_ideal[i]),
+                circ_dist(off, reverse_ideal[i]),
+                places=1,
+                msg=f"junction J{i + 1}: offset {off}s is not the symmetric compromise",
+            )
 
     def test_webster_four_phase_cycle_feasibility(self):
         """Checks 4-phase minimum cycle feasibility: C >= L + sum(g_min) = 14s + 40s = 54s."""
@@ -856,6 +910,162 @@ class TestTrafficAgentDSS(unittest.TestCase):
         agent_desc = self.agent.update_llm_config(model="deepseek-reasoner")
         self.assertEqual(agent_desc["model"], "deepseek-reasoner")
         self.assertEqual(self.agent.llm.model, "deepseek-reasoner")
+
+    def test_report_verification_header_matches_provenance(self):
+        """
+        The brief's header must not claim a completed physical roll-out when the numbers
+        came from calibrated data. The two statements appear inches apart in the same
+        document, so a mismatch is immediately visible to any reviewer.
+        """
+        state = {
+            "bottleneck_edge": "J1_J2",
+            "queue_m": 165.0,
+            "link_length_m": 300.0,
+            "speed_kmh": 8.2,
+            "occupancy": 0.82,
+            "bypass_occupancy": 0.28,
+        }
+        diagnosis = self.agent.diagnose_bottleneck(state)
+        strategies = self.agent.formulate_candidate_strategies(diagnosis)
+
+        verified_claim = "数字孪生沙盒推演完成"
+
+        # Calibrated (non-measured) data -> must NOT claim a verified simulation.
+        calibrated = {"execution_mode": "calibrated_empirical_fast", "kpis": {}, "comparisons": {}}
+        calibrated_report = self.agent.generate_decision_report(diagnosis, strategies, calibrated)
+        self.assertNotIn(verified_claim, calibrated_report)
+        self.assertIn("非实测", calibrated_report)
+
+        # Physical simulation -> the verified wording is legitimate.
+        physical = {"execution_mode": "physical_sumo_sandbox", "kpis": {}, "comparisons": {}}
+        physical_report = self.agent.generate_decision_report(diagnosis, strategies, physical)
+        self.assertIn(verified_claim, physical_report)
+
+    def test_rollout_api_surfaces_control_evidence_and_view_is_explicit(self):
+        """
+        The audit trail promised by the design (what was actually pushed into the
+        simulator) must be reachable through the API, and the scenario labels must be
+        echoed back so a caller can see which corridor really ran.
+        """
+        from fastapi.testclient import TestClient
+        from src.web.app import app
+
+        client = TestClient(app)
+        resp = client.post("/api/rollout", json={"run_physical_sandbox": False, "duration": 600})
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()
+
+        # Calibrated fast path also has to expose this key, even when it carries no
+        # physical control, so clients can rely on the field existing.
+        self.assertIn("control_evidence", payload)
+        self.assertFalse(payload["control_evidence"].get("physical_control_applied", True))
+        self.assertIn("scenario", payload)
+        self.assertIn("simulated_corridor", payload["scenario"])
+
+        # Radar series must be either a real 5-value list or explicitly absent — never a
+        # stand-in constant.
+        radar = payload.get("radar") or {}
+        for key in ("baseline", "strategy_a", "strategy_b"):
+            value = radar.get(key)
+            if value is not None:
+                self.assertEqual(len(value), 5)
+
+    def test_rollout_kpi_radar_defaults_removed_from_frontend(self):
+        """
+        P0 guard: the dashboard must not carry fabricated showcase constants. An earlier
+        revision rendered 44.6 / 138.3 / [92,95,88,90,85] whenever data was unavailable,
+        which made a failed request look like a successful, favourable result.
+        """
+        from pathlib import Path
+
+        js_path = Path(__file__).resolve().parent.parent / "src" / "web" / "static" / "js" / "dashboard.js"
+        source = js_path.read_text(encoding="utf-8")
+
+        # Code-shaped patterns only — the constant may legitimately appear inside an
+        # explanatory comment, but must never appear as a fallback value.
+        for fabricated in (
+            "delay_improvement_pct: 44.6",
+            "?? 44.6",
+            "[92, 95, 88, 90, 85]",
+            "[45, 42, 50, 48, 52]",
+            "avg_delay_s: 46.8",
+        ):
+            self.assertNotIn(fabricated, source, msg=f"fabricated fallback {fabricated} still present")
+        # Missing-data token must be in place.
+        self.assertIn("NO_DATA", source)
+
+    def test_sumo_command_forwards_requested_duration(self):
+        """
+        `--end` must be forwarded. The scenario config pins end=600, so a longer requested
+        duration used to make the stepping loop run past SUMO's end time; the resulting
+        TraCI error was swallowed by the API layer and silently turned into a calibrated
+        fallback, hiding that no physical run had happened.
+        """
+        import inspect
+        from src.simulation.sumo_sandbox import SumoSimulationSandbox
+
+        src = inspect.getsource(SumoSimulationSandbox.run_simulation)
+        self.assertIn('"--end"', src, msg="the SUMO command must forward an explicit --end")
+
+    def test_webster_oversaturation_flag_and_branch_agree(self):
+        """
+        The `is_oversaturated` flag and the cycle-cap branch must share one threshold.
+        Previously the flag fired at Y >= 0.85 while the branch only engaged at Y >= 0.95,
+        so a junction could be labelled oversaturated while still using Webster's
+        undersaturated cycle formula.
+        """
+        w = WebsterSignalOptimizer(saturation_flow_per_lane=1800.0)
+
+        # Y = 1620 / 1800 = 0.90 -> comfortably saturated, but below the cap threshold.
+        res = w.compute_timing(phase_flows=[1620.0], phase_lanes=[1])
+        self.assertAlmostEqual(res["total_flow_ratio"], 0.90, places=2)
+        self.assertFalse(res["is_oversaturated"])
+        self.assertTrue(res["approaching_saturation"])
+        # Below the shared threshold the Webster formula applies, so the cycle must not be
+        # forced onto the oversaturation cap.
+        self.assertNotEqual(res["optimal_cycle"], float(w.max_cycle))
+
+        # Y = 0.96 -> genuinely oversaturated: flag and cap must agree.
+        res_over = w.compute_timing(phase_flows=[1730.0], phase_lanes=[1])
+        self.assertGreaterEqual(res_over["total_flow_ratio"], w.oversaturation_threshold)
+        self.assertTrue(res_over["is_oversaturated"])
+        self.assertEqual(res_over["optimal_cycle"], float(w.max_cycle))
+
+    def test_vms_advisory_contains_no_fabricated_time_saving(self):
+        """
+        The VMS copy used to hard-code "预计节省通行时间8-12分钟", a number unrelated to any
+        input or computation, which then propagated into the decision brief as if modelled.
+        """
+        res = self.rerouter.calculate_diversion(
+            bottleneck_queue_meters=180.0,
+            bottleneck_link_length=300.0,
+            bottleneck_occupancy=0.85,
+            upstream_flow_vph=1800.0,
+            bypass_current_occupancy=0.30,
+            bypass_spare_capacity_vph=1200.0,
+        )
+        advisory = res["vms_advisory"]
+        self.assertNotIn("8-12", advisory)
+        self.assertNotIn("分钟", advisory)
+        # It must still state the observed condition and the advised action.
+        self.assertIn("排队", advisory)
+
+    def test_sandbox_evidence_reports_incident_errors_and_no_bogus_cycle(self):
+        """
+        Evidence fields must reflect what actually happened:
+          * baseline deploys no program, so it must not report a synthesised cycle length
+            (the old code produced a bogus 8.0 s from 0 + 2x4.0 + 0);
+          * incident injection/clearance must expose failures instead of claiming success.
+        """
+        import inspect
+        from src.simulation.sumo_sandbox import SumoSimulationSandbox
+
+        src = inspect.getsource(SumoSimulationSandbox.run_simulation)
+        self.assertIn("incident_errors", src)
+        self.assertIn("incident_lanes_blocked", src)
+        self.assertIn("signal_program_source", src)
+        # The cycle/green evidence must be gated on an actual deployment.
+        self.assertIn("if sp_deployed > 0", src)
 
 
 if __name__ == "__main__":

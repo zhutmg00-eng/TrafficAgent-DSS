@@ -31,6 +31,8 @@ class WebsterSignalOptimizer:
         self.min_green = max(1.0, float(min_green))
         self.yellow_time = max(0.0, float(yellow_time))
         self.all_red_time = max(0.0, float(all_red_time))
+        # Single source of truth for the oversaturation decision (see compute_timing).
+        self.oversaturation_threshold = 0.95
 
     def compute_timing(
         self,
@@ -72,8 +74,11 @@ class WebsterSignalOptimizer:
         # Minimum practical cycle must accommodate all lost times plus minimum greens for all phases
         min_practical_cycle = max(self.min_cycle, total_lost_time + num_phases * self.min_green)
 
-        # Handle oversaturated condition (Y >= 0.95)
-        if Y >= 0.95:
+        # Oversaturation threshold. Both the cycle-cap branch and the `is_oversaturated`
+        # flag must use the SAME threshold: the flag used to fire at 0.85 while the branch
+        # only engaged at 0.95, so a junction could be reported as oversaturated while its
+        # cycle was still computed with the undersaturated Webster formula.
+        if Y >= self.oversaturation_threshold:
             # Over-saturated state: cap at max practical cycle to maximize capacity
             optimal_cycle = float(max(min_practical_cycle, self.max_cycle))
         else:
@@ -126,5 +131,8 @@ class WebsterSignalOptimizer:
             "total_flow_ratio": round(Y, 3),
             "total_lost_time": round(total_lost_time, 1),
             "degree_of_saturation": degree_of_saturation,
-            "is_oversaturated": Y >= 0.85
+            "is_oversaturated": Y >= self.oversaturation_threshold,
+            # Same threshold family as the cycle branch above, so the flag and the computed
+            # cycle can never contradict each other.
+            "approaching_saturation": 0.85 <= Y < self.oversaturation_threshold,
         }

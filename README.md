@@ -4,7 +4,7 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![CI-Build](https://github.com/zhutmg00-eng/TrafficAgent-DSS/actions/workflows/ci.yml/badge.svg)](https://github.com/zhutmg00-eng/TrafficAgent-DSS/actions)
 [![Simulation-SUMO](https://img.shields.io/badge/Simulation-SUMO%20%2F%20TraCI-brightgreen.svg)](https://eclipse.dev/sumo/)
-[![Tests-110%20Passing](https://img.shields.io/badge/Tests-110%20Passed-success.svg)](tests/)
+[![Tests-93%20Passed](https://img.shields.io/badge/Tests-93%20Passed-success.svg)](tests/)
 [![Architecture-LLM%20Agent](https://img.shields.io/badge/Architecture-LLM%20Agent%20%26%20MAS-orange.svg)](https://github.com/zhutmg00-eng/TrafficAgent-DSS)
 [![Competition-ITSAC%202026](https://img.shields.io/badge/Competition-ITSAC%202026%20%E8%B5%9B%E9%A2%982-red.svg)](http://www.its-china.org.cn/)
 
@@ -33,7 +33,7 @@
 ```mermaid
 flowchart TB
     subgraph UI ["人机协同与决策展示层 (Web DSS Dashboard)"]
-        A1["自然语言交互问答 (Chat Interface)"]
+        A1["关键指标与瓶颈态势卡片 (Situational KPI Cards)"]
         A2["路网态势与数字孪生看板 (Digital Twin View)"]
         A3["多预案 A/B 指标对比看板 (Radar & Metrics Chart)"]
     end
@@ -41,18 +41,18 @@ flowchart TB
     subgraph AgentCore ["智能体决策大脑 (LLM Traffic Agent)"]
         B1["拥堵归因诊断 Agent (Symptom & Bottleneck Reasoner)"]
         B2["预案生成与调优 Agent (Policy Generator)"]
-        B3["反思评估 Agent (Reflexion & Scoring Loop)"]
+        B3["方案量化评估与决策简报生成 (Evaluation & Briefing)"]
     end
 
     subgraph Tools ["交通工程专业工具箱 (Domain Tools)"]
         C1["Webster 最佳信号配时计算"]
         C2["干线动态绿波协调算法"]
         C3["上游可变信息板 (VMS) 动态分流模型"]
-        C4["瓶颈可变限速 (VSL) 控流模型"]
+        C4["五维性能指标量化评估器 (5-D Evaluator)"]
     end
 
     subgraph Simulation ["仿真推演底座 (SUMO & TraCI Digital Twin)"]
-        D1["OpenStreetMap 真实路网模型"]
+        D1["走廊标定路网模型 (netconvert 构建的 J1-J3 干线)"]
         D2["微观车辆跟驰/换道物理引擎 (Krauss/IDM)"]
         D3["TraCI 动态控制注入 (信号修改/动态重路由)"]
         D4["客观性能指标输出 (延误/排队/通行能力/碳排)"]
@@ -68,11 +68,15 @@ flowchart TB
 ## 💡 4. 核心功能与工作闭环
 
 1. **零门槛路网构建与数据驱动**：
-   - 基于 OpenStreetMap (OSM) 提取北京真实典型瓶颈区域（如西直门立交、中关村、学院路等典型复杂路网）。
+   - 基于 SUMO `netconvert` 构建的 **J1–J3 走廊标定路网**（`scenarios/corridor.*.xml`），
+     复现主线合流瓶颈 + 平行旁路拓扑；流量按北京高峰干线量级标定。
    - 支持常规高峰流量标定，并可**一键注入突发事件（如事故占道、暴雨限速、潮汐车流激增）**。
+   - > 📌 说明：当前路网为**抽象标定走廊**，尚不是从 OpenStreetMap 提取的真实 Beijing 区域路网；
+   > 接入真实 OSM 数据列为后续工作。
 2. **交通智能体推理大脑（Agent Brain）**：
    - 突破传统调参黑盒，采用**思维链（Chain-of-Thought）**输出具有专业交通工程逻辑的归因与治理方案。
-   - 具备**反思调控机制（Reflection）**：若初步方案在仿真推演中导致周边路网次生拥堵，智能体自动调整参数重新推演。
+   - 推理层支持**运行时热切换大模型**（OpenAI 兼容端点，见 7.2 节），并在未配置或调用失败时
+     **显式降级**为确定性规则模板（输出中如实标注 `reasoning_mode`，不伪造结论）。
 3. **数字沙盘 A/B 对照推演（What-If Counterfactual Deduction）**：
    - 实时执行基线场景（无干预现状）与多种备选治理预案（如：纯信号优化 vs. 信号+诱导分流组合拳）的沙盒并行推演。
    - 毫秒级输出客观量化指标：
@@ -116,9 +120,9 @@ TrafficAgent-DSS/
 │   ├── corridor.net.xml                   # 典型双通道干线路网拓扑
 │   ├── corridor.rou.xml                   # 高峰潮汐与突发事故交通需求
 │   └── corridor.sumocfg                   # SUMO 仿真配置文件
-├── tests/                                 # 自动化测试套件（全量 104 项测试 100% 通过）
-│   ├── test_system.py                     # 交通工程算法与智能体推理单元测试 (54 项)
-│   ├── test_web_api.py                    # RESTful Web API 与路由集成测试 (26 项)
+├── tests/                                 # 自动化测试套件（`unittest` 实测 93 项，100% 通过）
+│   ├── test_system.py                     # 交通工程算法与智能体推理单元测试 (44 项)
+│   ├── test_web_api.py                    # RESTful Web API 与路由集成测试 (25 项)
 │   └── test_empirical_challenger_2.py     # 极限边界与鲁棒性挑战压力测试 (24 项)
 ├── .gitignore                             # Git 忽略配置
 ├── requirements.txt                       # Python 依赖清单 (FastAPI/TraCI/Uvicorn)
@@ -133,11 +137,11 @@ TrafficAgent-DSS/
 - [x] **Step 2: 搭建基础路网与 SUMO 仿真沙盒**（已完成：`scenarios/` 走廊路网 + TraCI 沙盒，支持事故注入与限速还原）
 - [x] **Step 3: 核心智能体推理引擎与工具库开发**（已完成：大模型归因 + Webster/绿波/动态诱导工具库 + 诊断→策略→推演闭环）
 - [x] **Step 4: Web 决策大屏原型搭建**（已完成：FastAPI + 单页大屏，含方案下发与 A/B 效果对比图表）
-- [x] **Step 5: 端到端仿真复验与系统级鲁棒性加固**（已完成：SUMO 真实物理推演跑通，"协同 > 单点 > 基线"因果链闭环；全系统 22 项边界缺陷治理完成；实现多种子批量实验与 95% 置信区间统计评估；全量 104 项单元测试与 GitHub Actions CI 100% 稳定通过）
+- [x] **Step 5: 端到端仿真复验与系统级鲁棒性加固**（已完成：SUMO 真实物理推演跑通，"协同 > 单点 > 基线"因果链闭环；全系统边界缺陷治理完成；实现多种子批量实验与 95% 置信区间统计评估；93 项单元测试与 GitHub Actions CI 100% 稳定通过）
 - [ ] **Step 6: 成果材料撰写与包装**（推进中：完成《作品申报书》、6页《作品说明书》小论文、录制演示视频与答辩PPT）
 
-> ✅ **系统验证与工程质量认证**（2026-09-12 最新）：
-> - **测试覆盖**：全量 104 项测试（80 项核心系统测试 + 24 项实证压力挑战测试）通过率 100%，GitHub Actions CI 自动化流水线（Python 3.10 / 3.12）全部通过（绿灯）；
+> ✅ **系统验证与工程质量认证**（2026-09-13 最新）：
+> - **测试覆盖**：`python -m unittest discover -s tests` 实测 **93 项测试**（44 项核心系统 + 25 项 Web API + 24 项实证压力测试）通过率 100%，GitHub Actions CI 自动化流水线（Python 3.10 / 3.12）全部通过（绿灯）；
 > - **统计可靠性**：新增 `POST /api/evaluate/multi-seed` 端点，支持多随机种子（Multi-Seed）并行或批量推演，输出均值、标准误（SEM）与 95% 置信区间（CI），具备扎实的数理统计显著性；
 > - **系统健壮性**：涵盖 Webster 配时残差精准吸收、纯反向绿波加权、VMS 诱导防假触发与旁路 80% 熔断、SUMO 进程 5 秒僵尸超时清理及物理仿真缺失时的平滑高精度标定降级。完整更新记录详见 [`CHANGELOG.md`](CHANGELOG.md)。
 

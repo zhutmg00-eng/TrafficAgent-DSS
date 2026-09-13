@@ -802,6 +802,23 @@ input:checked + .switch-slider:before {
   position: relative;
 }
 
+/* Missing-data state for chart panels. Shown instead of a fabricated series so that an
+   absent result set can never be mistaken for a measured one. */
+.chart-empty {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 24px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-muted);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-md);
+}
+
 /* Report View & Actions */
 .report-card {
   background: var(--bg-card);

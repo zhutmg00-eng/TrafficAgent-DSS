@@ -41,6 +41,10 @@ class LLMReasoningClient:
 
     MODE_LLM = "llm"
     MODE_UNCONFIGURED = "template_fallback_unconfigured"
+    # Distinct from MODE_UNCONFIGURED: the API key IS set but the OpenAI SDK is not
+    # installed. Reporting this as "no API key configured" would misdirect anyone trying to
+    # diagnose why the model never runs.
+    MODE_SDK_MISSING = "template_fallback_sdk_missing"
     MODE_ERROR = "template_fallback_llm_error"
 
     def __init__(
@@ -343,7 +347,7 @@ class LLMReasoningClient:
         Returns:
             (payload, mode, error)
               payload : parsed dict, or None when the model was not used
-              mode    : one of MODE_LLM / MODE_UNCONFIGURED / MODE_ERROR
+              mode    : one of MODE_LLM / MODE_UNCONFIGURED / MODE_SDK_MISSING / MODE_ERROR
               error   : human-readable reason, or None on success
         """
         if not self.is_configured:
@@ -352,8 +356,11 @@ class LLMReasoningClient:
 
         openai_cls = self._sdk()
         if openai_cls is None:
-            self.last_error = "openai package is not installed"
-            return None, self.MODE_UNCONFIGURED, self.last_error
+            self.last_error = (
+                "openai package is not installed — run `pip install openai` "
+                "(an API key alone is not enough)"
+            )
+            return None, self.MODE_SDK_MISSING, self.last_error
 
         try:
             kwargs: Dict[str, Any] = {"api_key": self.api_key, "timeout": self.timeout}

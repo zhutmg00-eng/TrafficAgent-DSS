@@ -378,13 +378,18 @@ function renderCoTDiagnosis() {
   const terminalBody = document.getElementById('cotTerminalBody');
   if (!terminalBody) return;
 
-  const steps = state.diagnosis?.cot_reasoning || [
-    "1. 【态势感知】监测到走廊主断面 [J1_J2] 平均车速骤降至 8.2 km/h，占有率高达 82%。",
-    "2. 【空间排队】当前排队长度达到 165.0 米，占路段库容比为 55%，已逼近回溢警戒线 (75%)。",
-    "3. 【成因归因】突发占道事故导致通行能力锐减 60%，晚高峰潮汐车流高位积压形成激波回传。",
-    "4. 【蔓延风险】若不采取干预，排队将在 180 秒内回溢至上游交叉口 J1，锁死东西向及南北向交叉车流。",
-    "5. 【旁路核查】北部平行通道当前占有率仅为 28%，具备充沛备用承载容量，适宜实施诱导分流。"
-  ];
+  // No fabricated reasoning. This panel used to fall back to a five-step chain-of-thought
+  // that quoted specific detector readings (8.2 km/h, 82%, 165 m) even when no diagnosis had
+  // been produced, i.e. it presented invented analysis as the agent's output.
+  const steps = state.diagnosis?.cot_reasoning || [];
+
+  if (!steps.length) {
+    terminalBody.innerHTML =
+      '<div class="cot-step"><span class="cot-step-text">' +
+      '尚未获得诊断结果 —— 请先执行态势诊断，或点击「一键协同决策」运行完整流水线。' +
+      '</span></div>';
+    return;
+  }
 
   terminalBody.innerHTML = steps.map(step => {
     const match = step.match(/^(\d+\.\s*【[^】]+】)(.*)$/);
@@ -410,23 +415,30 @@ function renderStrategies() {
   if (rerouteB && stratB) rerouteB.textContent = `${Math.round(stratB.reroute_ratio * 100)}%`;
 }
 
+// Shared "no data" token for every KPI surface. The dashboard must never fall back to
+// plausible-looking constants: if the backend did not return a value, the card shows this
+// instead of a number nobody computed. (An earlier revision carried hard-coded showcase
+// figures such as 44.6% / 138.3% and a [92,95,88,90,85] radar, which meant a failed request
+// still rendered a full, confident-looking result.)
+const NO_DATA = '—';
+
+function numOrNull(v) {
+  if (v === null || v === undefined || v === '' ) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 // Render Rollout KPIs
 function renderRolloutKPIs() {
   if (!state.rollout) return;
-  const comp = state.rollout.comparisons?.strategy_b || {
-    delay_improvement_pct: 44.6,
-    queue_improvement_pct: 56.6,
-    speed_improvement_pct: 138.3,
-    throughput_improvement_pct: 32.8,
-    co2_improvement_pct: 26.2
-  };
-  const kpis = state.rollout.kpis?.strategy_b || {
-    avg_delay_s: 46.8,
-    max_queue_m: 105.0,
-    avg_speed_kmh: 22.4,
-    throughput_vph: 1780.0,
-    co2_emissions_kg: 134.6
-  };
+  const comp = state.rollout.comparisons?.strategy_b || null;
+  const kpis = state.rollout.kpis?.strategy_b || null;
+
+  const delayV = numOrNull(comp?.delay_improvement_pct);
+  const queueV = numOrNull(comp?.queue_improvement_pct);
+  const speedV = numOrNull(comp?.speed_improvement_pct);
+  const tpV = numOrNull(comp?.throughput_improvement_pct);
+  const co2V = numOrNull(comp?.co2_improvement_pct);
 
   const delayImp = document.getElementById('rolloutDelayImp');
   const queueImp = document.getElementById('rolloutQueueImp');
@@ -434,11 +446,11 @@ function renderRolloutKPIs() {
   const tpImp = document.getElementById('rolloutTpImp');
   const co2Imp = document.getElementById('rolloutCo2Imp');
 
-  if (delayImp) delayImp.textContent = `-${comp.delay_improvement_pct}%`;
-  if (queueImp) queueImp.textContent = `-${comp.queue_improvement_pct}%`;
-  if (speedImp) speedImp.textContent = `+${comp.speed_improvement_pct}%`;
-  if (tpImp) tpImp.textContent = `+${comp.throughput_improvement_pct}%`;
-  if (co2Imp) co2Imp.textContent = `-${comp.co2_improvement_pct}%`;
+  if (delayImp) delayImp.textContent = delayV === null ? NO_DATA : `-${delayV}%`;
+  if (queueImp) queueImp.textContent = queueV === null ? NO_DATA : `-${queueV}%`;
+  if (speedImp) speedImp.textContent = speedV === null ? NO_DATA : `${speedV >= 0 ? '+' : ''}${speedV}%`;
+  if (tpImp) tpImp.textContent = tpV === null ? NO_DATA : `${tpV >= 0 ? '+' : ''}${tpV}%`;
+  if (co2Imp) co2Imp.textContent = co2V === null ? NO_DATA : `-${co2V}%`;
 
   const delayAct = document.getElementById('rolloutDelayAct');
   const queueAct = document.getElementById('rolloutQueueAct');
@@ -446,11 +458,17 @@ function renderRolloutKPIs() {
   const tpAct = document.getElementById('rolloutTpAct');
   const co2Act = document.getElementById('rolloutCo2Act');
 
-  if (delayAct) delayAct.textContent = `降至 ${kpis.avg_delay_s} s/veh`;
-  if (queueAct) queueAct.textContent = `缩减至 ${kpis.max_queue_m} m`;
-  if (speedAct) speedAct.textContent = `提升至 ${kpis.avg_speed_kmh} km/h`;
-  if (tpAct) tpAct.textContent = `达 ${kpis.throughput_vph} veh/h`;
-  if (co2Act) co2Act.textContent = `降至 ${kpis.co2_emissions_kg} kg`;
+  const delayS = numOrNull(kpis?.avg_delay_s);
+  const queueM = numOrNull(kpis?.max_queue_m);
+  const speedK = numOrNull(kpis?.avg_speed_kmh);
+  const tput = numOrNull(kpis?.throughput_vph);
+  const co2K = numOrNull(kpis?.co2_emissions_kg);
+
+  if (delayAct) delayAct.textContent = delayS === null ? NO_DATA : `降至 ${delayS} s/veh`;
+  if (queueAct) queueAct.textContent = queueM === null ? NO_DATA : `缩减至 ${queueM} m`;
+  if (speedAct) speedAct.textContent = speedK === null ? NO_DATA : `至 ${speedK} km/h`;
+  if (tpAct) tpAct.textContent = tput === null ? NO_DATA : `达 ${tput} veh/h`;
+  if (co2Act) co2Act.textContent = co2K === null ? NO_DATA : `降至 ${co2K} kg`;
 }
 
 // Charts Rendering via ECharts
@@ -480,20 +498,39 @@ function renderRadarChart() {
   const dom = document.getElementById('radarChartContainer');
   if (!dom) return;
 
+  const isDark = state.theme === 'dark';
+
+  // Series are drawn only from scores the evaluator actually produced. The previous
+  // fallback hard-coded [92,95,88,90,85] / [65,60,68,62,66], so an empty result set still
+  // rendered a favourable-looking radar — a fabricated visual conclusion.
+  const radar = state.rollout?.radar || null;
+  const dimensions = (radar && radar.dimensions) || ["通行效率", "空间治堵", "容量释放", "运行平稳", "绿色低碳"];
+
+  const SERIES_META = [
+    { key: 'baseline',   name: '现状基线 (Do-Nothing)',   color: '#94a3b8', width: 2, dashed: true,  area: 'rgba(148, 163, 184, 0.2)' },
+    { key: 'strategy_a', name: '方案 A (Webster自适应)',  color: '#f59e0b', width: 2, dashed: false, area: 'rgba(245, 158, 11, 0.25)' },
+    { key: 'strategy_b', name: '方案 B (Agent协同DSS)',   color: '#10b981', width: 3, dashed: false, area: 'rgba(16, 185, 129, 0.35)' }
+  ];
+
+  const present = SERIES_META.filter(
+    m => radar && Array.isArray(radar[m.key]) && radar[m.key].length === dimensions.length
+  );
+
+  if (!present.length) {
+    if (radarChartInstance) {
+      radarChartInstance.dispose();
+      radarChartInstance = null;
+    }
+    dom.innerHTML = '<div class="chart-empty">暂无可用的评估分值（尚未获得 A/B 推演对比数据）。</div>';
+    return;
+  }
+
   if (typeof echarts === 'undefined') {
     renderCanvasRadarFallback(dom);
     return;
   }
 
-  const isDark = state.theme === 'dark';
   radarChartInstance = echarts.init(dom, isDark ? 'dark' : null);
-
-  const radarData = state.rollout?.radar || {
-    dimensions: ["通行效率", "空间治堵", "容量释放", "运行平稳", "绿色低碳"],
-    baseline: [45, 42, 50, 48, 52],
-    strategy_a: [65, 60, 68, 62, 66],
-    strategy_b: [92, 95, 88, 90, 85]
-  };
 
   const option = {
     backgroundColor: 'transparent',
@@ -501,10 +538,10 @@ function renderRadarChart() {
     legend: {
       bottom: 0,
       textStyle: { color: isDark ? '#94a3b8' : '#475569', fontSize: 12 },
-      data: ['现状基线 (Do-Nothing)', '方案 A (Webster自适应)', '方案 B (Agent协同DSS)']
+      data: present.map(m => m.name)
     },
     radar: {
-      indicator: radarData.dimensions.map(d => ({ name: d, max: 100 })),
+      indicator: dimensions.map(d => ({ name: d, max: 100 })),
       splitNumber: 4,
       axisName: {
         color: isDark ? '#cbd5e1' : '#334155',
@@ -526,29 +563,13 @@ function renderRadarChart() {
     },
     series: [{
       type: 'radar',
-      data: [
-        {
-          value: radarData.baseline,
-          name: '现状基线 (Do-Nothing)',
-          itemStyle: { color: '#94a3b8' },
-          lineStyle: { width: 2, type: 'dashed' },
-          areaStyle: { color: 'rgba(148, 163, 184, 0.2)' }
-        },
-        {
-          value: radarData.strategy_a,
-          name: '方案 A (Webster自适应)',
-          itemStyle: { color: '#f59e0b' },
-          lineStyle: { width: 2 },
-          areaStyle: { color: 'rgba(245, 158, 11, 0.25)' }
-        },
-        {
-          value: radarData.strategy_b,
-          name: '方案 B (Agent协同DSS)',
-          itemStyle: { color: '#10b981' },
-          lineStyle: { width: 3 },
-          areaStyle: { color: 'rgba(16, 185, 129, 0.35)' }
-        }
-      ]
+      data: present.map(m => ({
+        value: radar[m.key],
+        name: m.name,
+        itemStyle: { color: m.color },
+        lineStyle: m.dashed ? { width: m.width, type: 'dashed' } : { width: m.width },
+        areaStyle: { color: m.area }
+      }))
     }]
   };
 
@@ -740,8 +761,13 @@ async function executeAgentDecisionPipeline() {
       // 4. Export formatted decision report
       await fetchDecisionReport();
 
-      const delayImp = rolloutData.comparisons?.strategy_b?.delay_improvement_pct ?? 44.6;
-      showToast(`🎉 智能体协同推演完成！方案 B 延误降低 ${delayImp}%`, 'success');
+      const delayImp = numOrNull(rolloutData.comparisons?.strategy_b?.delay_improvement_pct);
+      showToast(
+        delayImp === null
+          ? '推演完成，但未返回方案 B 的对比指标，请检查执行模式与控制证据。'
+          : `🎉 智能体协同推演完成！方案 B 延误降低 ${delayImp}%`,
+        delayImp === null ? 'info' : 'success'
+      );
     } else {
       const err = await rolloutRes.json();
       showToast(`推演错误: ${err.detail || '未知异常'}`, 'error');

@@ -103,9 +103,14 @@ class DynamicReroutingAllocator:
         diverted_vph = round(upstream_flow_vph * final_diversion)
 
         if final_diversion > 0.0:
+            # No "saves N minutes" claim here. The previous wording promised "预计节省通行
+            # 时间8-12分钟" as a literal constant, unrelated to any input or computation, and
+            # it propagated into the decision brief as if it were a modelled result. A real
+            # VMS advisory states the condition and the advised action; the benefit is
+            # established by the What-If rollout, not asserted in the sign text.
             vms_text = (
-                f"【交通诱导】前方主干路严重拥堵，排队{int(bottleneck_queue_meters)}米。"
-                f"建议非直通车辆右转经旁路绕行，预计节省通行时间8-12分钟。"
+                f"【交通诱导】前方主干路拥堵，排队{int(bottleneck_queue_meters)}米，"
+                f"建议非直通车辆右转经旁路绕行。"
             )
         else:
             vms_text = "前方主干路通行顺畅，请按道行驶"

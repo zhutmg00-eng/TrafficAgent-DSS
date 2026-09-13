@@ -323,7 +323,7 @@ class SumoSimulationSandbox:
         signal_program = control_params.get("signal_program") or {}
         sp_green_main = float(signal_program.get("green_main") or 0.0)
         sp_green_cross = float(signal_program.get("green_cross") or 0.0)
-        sp_yellow = float(signal_program.get("yellow") or 4.0)
+        sp_yellow = float(signal_program.get("yellow") or 0.0)
         sp_first_green_starts = [float(s) for s in (signal_program.get("first_green_start") or [])]
 
         # Control-actuation accounting: proves which controls actually reached the simulator.
@@ -337,6 +337,13 @@ class SumoSimulationSandbox:
         cmd = [
             self.sumo_bin,
             "-c", str(self.cfg_file),
+            # `--end` must be forwarded explicitly: the scenario config pins end=600, so any
+            # longer requested duration used to make the stepping loop call simulationStep()
+            # past SUMO's end time. That raised a TraCI error which the API layer silently
+            # converted into a calibrated fallback, hiding the fact that the physical run
+            # never happened. The CLI value overrides the config file, so the simulated
+            # horizon now always matches the requested one.
+            "--end", str(int(duration)),
             "--no-step-log", "true",
             "--time-to-teleport", "-1",
             "--collision.action", "none",
@@ -369,6 +376,12 @@ class SumoSimulationSandbox:
         # Speed limits captured at incident-injection time, so the clearance step can restore
         # the road exactly instead of forcing every scenario back to a hard-coded 60 km/h.
         original_lane_speeds: Dict[str, float] = {}
+        # Incident actuation accounting. Injection and clearance used to be wrapped in a bare
+        # `except: pass` and then the `incident_injected` / `incident_cleared` flags were set
+        # unconditionally, so the evidence block reported a successful incident even when no
+        # lane was ever touched. Mirrors the `reroute_errors` pattern used for VMS diversion.
+        incident_lanes_blocked: List[str] = []
+        incident_errors: List[str] = []
 
         try:
             try:
@@ -410,18 +423,28 @@ class SumoSimulationSandbox:
                             if lane_id not in original_lane_speeds:
                                 original_lane_speeds[lane_id] = conn.lane.getMaxSpeed(lane_id)
                             conn.lane.setMaxSpeed(lane_id, 0.5)
-                        except Exception:
-                            pass
-                    incident_injected = True
+                            incident_lanes_blocked.append(lane_id)
+                        except Exception as exc:
+                            if len(incident_errors) < 5:
+                                incident_errors.append(f"{lane_id} (inject): {type(exc).__name__}: {exc}")
+                    incident_injected = bool(incident_lanes_blocked)
 
                 # Clear Incident: restore the ORIGINAL speed limits (not a hard-coded value)
                 if incident_injected and not incident_cleared and step >= incident_end:
-                    for lane_id, original_speed in original_lane_speeds.items():
+                    restored_ok = 0
+                    for lane_id in incident_lanes_blocked:
+                        original_speed = original_lane_speeds.get(lane_id)
+                        if original_speed is None:
+                            continue
                         try:
                             conn.lane.setMaxSpeed(lane_id, original_speed)
-                        except Exception:
-                            pass
-                    incident_cleared = True
+                            restored_ok += 1
+                        except Exception as exc:
+                            if len(incident_errors) < 5:
+                                incident_errors.append(f"{lane_id} (restore): {type(exc).__name__}: {exc}")
+                    # Only claim clearance once every blocked lane is verifiably back to its
+                    # original limit.
+                    incident_cleared = restored_ok == len(incident_lanes_blocked) and restored_ok > 0
 
                 # 2. Signal control: nothing here by design.
                 #    The Webster program (and the green-wave phase alignment) was deployed
@@ -560,10 +583,21 @@ class SumoSimulationSandbox:
                 "webster_program_errors": sp_errors,
                 "green_wave_applied": bool(green_wave_on and sp_first_green_starts),
                 "green_wave_first_green_start_s": sp_first_green_starts,
-                "cycle_length": round(sp_green_main + 2 * sp_yellow + sp_green_cross, 1),
-                "arterial_green": sp_green_main,
-                "cross_green": sp_green_cross,
-                "yellow": sp_yellow,
+                # Only reported when a program was actually deployed. The baseline runs on the
+                # network's own 41/4/41/4 actuated plan; emitting a cycle here would have
+                # synthesised a bogus 8.0 s cycle (0 + 2x4.0 + 0) for a scheme that deploys
+                # nothing at all.
+                "cycle_length": (
+                    round(sp_green_main + 2 * sp_yellow + sp_green_cross, 1)
+                    if sp_deployed > 0
+                    else None
+                ),
+                "arterial_green": sp_green_main if sp_deployed > 0 else None,
+                "cross_green": sp_green_cross if sp_deployed > 0 else None,
+                "yellow": sp_yellow if sp_deployed > 0 else None,
+                "signal_program_source": (
+                    "strategy_plan" if sp_deployed > 0 else "network_default (no program deployed)"
+                ),
                 "reroute_ratio_applied": reroute_ratio,
                 "reroute_source_edge": approach_edge,
                 "signal_commands": signal_commands,
@@ -571,6 +605,12 @@ class SumoSimulationSandbox:
                 "reroute_errors": reroute_errors,
                 "incident_injected": incident_injected,
                 "incident_cleared": incident_cleared,
-                "lane_speeds_restored": {k: round(v, 2) for k, v in original_lane_speeds.items()},
+                "incident_lanes_blocked": incident_lanes_blocked,
+                "incident_errors": incident_errors,
+                "lane_speeds_restored": {
+                    lane_id: round(original_lane_speeds[lane_id], 2)
+                    for lane_id in incident_lanes_blocked
+                    if lane_id in original_lane_speeds
+                },
             },
         }

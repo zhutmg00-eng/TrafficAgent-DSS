@@ -15,8 +15,23 @@ import os
 import sys
 import json
 import math
+import inspect
 from pathlib import Path
 from typing import Dict, List, Any, Optional
+
+# ---------------------------------------------------------------------------- #
+# Corridor calibration constants
+#
+# These describe the calibrated bottleneck cross-section of the J1-J3 corridor
+# (scenarios/corridor.net.xml): a 3-lane arterial approach whose design capacity is
+# 3 x 1800 = 5400 pcu/h. They are NOT derived from the incoming traffic_state — a single
+# cross-section detector cannot resolve lane geometry or saturation flow — so they are
+# declared here explicitly rather than buried as literals inside the prompt and the
+# rule-template narrative. Any scenario change must update this single place.
+# ---------------------------------------------------------------------------- #
+CORRIDOR_ARTERIAL_LANES = 3
+CORRIDOR_SATURATION_FLOW_PER_LANE_PCU_H = 1800
+CORRIDOR_DESIGN_CAPACITY_PCU_H = CORRIDOR_ARTERIAL_LANES * CORRIDOR_SATURATION_FLOW_PER_LANE_PCU_H
 
 
 def _safe_float(val: Any, default: float, min_val: Optional[float] = None, max_val: Optional[float] = None) -> float:
@@ -158,6 +173,9 @@ class TrafficDecisionAgent:
         elif mode == LLMReasoningClient.MODE_ERROR:
             engine = "deterministic_template"
             label = "确定性规则模板（大模型调用失败，已显式降级）"
+        elif mode == LLMReasoningClient.MODE_SDK_MISSING:
+            engine = "deterministic_template"
+            label = "确定性规则模板（已配置 API Key，但缺少 openai SDK，请 pip install openai）"
         else:
             engine = "deterministic_template"
             label = "确定性规则模板（未配置大模型 API Key）"
@@ -304,7 +322,7 @@ class TrafficDecisionAgent:
         cot_steps = [
             f"1. 【态势感知】监测到走廊主断面 [{bottleneck_edge}] 平均车速降至 {round(speed_kmh, 1)} km/h，占有率 {occ_pct}%。",
             f"2. 【空间排队】当前排队长度 {round(queue_m, 1)} 米，占路段库容比 {queue_ratio_pct}%，{'已越过' if queue_ratio >= 0.75 else '尚未触及'}回溢警戒线 (75%)。",
-            f"3. 【成因归因】路段设计通行能力为 3 车道 (5400 pcu/h)，突发降速与排队激增表明存在【突发占道/瓶颈车道受阻】叠加【高峰车流集中汇聚】。",
+            f"3. 【成因归因】路段设计通行能力为 {CORRIDOR_ARTERIAL_LANES} 车道 ({CORRIDOR_DESIGN_CAPACITY_PCU_H} pcu/h，走廊标定值)，突发降速与排队激增表明存在【突发占道/瓶颈车道受阻】叠加【高峰车流集中汇聚】。",
             f"4. 【蔓延风险】按当前排队增速推演，上游交叉口存在被回溢车流锁死的风险。",
             f"5. 【旁路核查】平行分流通道当前占有率 {bypass_occ_pct}%，{'具备' if bypass_occ < 0.75 else '不具备'}实施动态诱导分流的备用容量。",
         ]
@@ -357,7 +375,7 @@ class TrafficDecisionAgent:
                 "瓶颈瞬时车速_kmh": speed_kmh,
                 "断面车道占有率": occupancy,
                 "平行旁路占有率": bypass_occ,
-                "设计通行能力_pcu_h": 5400,
+                "设计通行能力_pcu_h": CORRIDOR_DESIGN_CAPACITY_PCU_H,
                 "回溢警戒线_库容比": 0.75,
                 "场景": "晚高峰潮汐高负荷叠加突发占道事故",
             },
@@ -595,24 +613,29 @@ class TrafficDecisionAgent:
             plan["signal_program"], first_green_start=list(gw_plan["offsets"])
         )
 
+        # Probe the sandbox signature ONCE rather than catching TypeError as control flow.
+        # The previous `try: ... except TypeError: <rerun without seed>` pattern could not
+        # tell "this sandbox does not accept seed" apart from "something inside the
+        # simulation raised TypeError": in the latter case it silently launched a *second*
+        # SUMO process and then re-raised, wasting a run and hiding the real cause.
+        try:
+            _sandbox_supports_seed = "seed" in inspect.signature(
+                self.sandbox.run_simulation
+            ).parameters
+        except (TypeError, ValueError):  # pragma: no cover - exotic callables
+            _sandbox_supports_seed = False
+
         def _run_sandbox(scheme_name: str, ctl: Dict[str, Any]) -> Dict[str, Any]:
-            try:
-                return self.sandbox.run_simulation(
-                    scheme=scheme_name,
-                    duration=duration,
-                    incident_start=incident_start,
-                    incident_end=incident_end,
-                    control_params=ctl,
-                    seed=safe_seed,
-                )
-            except TypeError:
-                return self.sandbox.run_simulation(
-                    scheme=scheme_name,
-                    duration=duration,
-                    incident_start=incident_start,
-                    incident_end=incident_end,
-                    control_params=ctl,
-                )
+            kwargs: Dict[str, Any] = dict(
+                scheme=scheme_name,
+                duration=duration,
+                incident_start=incident_start,
+                incident_end=incident_end,
+                control_params=ctl,
+            )
+            if _sandbox_supports_seed:
+                kwargs["seed"] = safe_seed
+            return self.sandbox.run_simulation(**kwargs)
 
         # Run Baseline
         print("[Agent] Rolling out Baseline (Do-Nothing)...")
@@ -857,6 +880,16 @@ class TrafficDecisionAgent:
             "unknown": "⚠️ 数据来源未标注 —— 本报告不得作为量化结论对外使用",
         }.get(execution_mode, execution_mode)
 
+        # The report header must never claim a verified physical roll-out when the numbers
+        # actually came from calibrated (non-measured) data — that would contradict the
+        # provenance table printed a few lines below.
+        if execution_mode == "physical_sumo_sandbox":
+            verification_status = "数字孪生沙盒推演完成 (What-If Simulation Verified)"
+        else:
+            verification_status = (
+                "标定经验数据（非实测）(Calibrated Estimate — NOT a simulation run)"
+            )
+
         reasoning_label = diagnosis.get("reasoning_label", "确定性规则模板")
         narrative_label = strategies.get("narrative_label", "确定性规则模板")
         evidence = (rollout_results.get("control_evidence") or {}).get("strategy_b", {})
@@ -903,7 +936,7 @@ class TrafficDecisionAgent:
                 row("最大排队长度 (m)", "max_queue_m", " m", "缩短", "增加"),
                 row("瓶颈平均车速 (km/h)", "avg_speed_kmh", " km/h", "提升", "下降"),
                 row("路网通行吞吐量 (veh/h)", "throughput_vph", " veh/h", "提升", "下降"),
-                row("延误方差 / 运行可靠性 (s²)", "delay_variance", " s²", "降低", "增加"),
+                row("路网延误时序波动 (s²)", "delay_variance", " s²", "降低", "增加"),
                 row("碳排放总量 (kg CO2)", "co2_emissions_kg", " kg", "减排", "增排"),
                 row("燃油消耗估算 (L)", "fuel_liters", " L", "降低", "增加"),
             ]
@@ -999,7 +1032,7 @@ class TrafficDecisionAgent:
 
 **报告编号**：`DSS-2026-EXP-{int(os.getpid())}`  
 **决策系统**：TrafficAgent-DSS (基于交通仿真智能体的城市交通拥堵治理决策支持系统)  
-**评估状态**：数字孪生沙盒推演完成 (What-If Simulation Verified)
+**评估状态**：{verification_status}
 
 ---
 

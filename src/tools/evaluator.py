@@ -13,8 +13,14 @@ class PerformanceEvaluator:
       1. Travel Efficiency: Average Delay (s/veh)
       2. Spatial Congestion: Maximum Queue Length (m)
       3. Capacity Utilization: Network Bottleneck Throughput (veh/h)
-      4. Service Reliability: Travel Time Variance (s^2)
+      4. Service Reliability: Delay time-series variance (s^2)
       5. Green & Low-Carbon: CO2 Emissions (kg) & Fuel Consumption (L)
+
+    NOTE on `delay_variance`: the sandbox samples the *network mean* time-loss every 5 s,
+    so this KPI is the variance of that 5-second time series — a measure of how unstable
+    the corridor's delay level is over time. It is NOT the per-vehicle travel-time
+    variance. The two share the unit s^2 but describe different things, and any external
+    write-up must not label this figure "per-vehicle travel time variance".
     """
 
     @staticmethod
@@ -67,6 +73,8 @@ class PerformanceEvaluator:
         max_queue = float(np.max(queues)) if len(queues) > 0 else 0.0
         avg_speed_kmh = float(np.mean(speeds)) * 3.6 if len(speeds) > 0 else 0.0
         throughput_vph = round(completed_trips * (3600.0 / sim_duration_sec), 1)
+        # Variance of the 5-second network-mean delay series (stability over time),
+        # NOT the per-vehicle travel-time variance — see the class docstring.
         tt_variance = float(np.var(delays)) if len(delays) > 1 else 0.0
         co2_kg = round(co2_mg / 1e6, 2)
         # SUMO getFuelConsumption returns mg/s; fuel mass is in mg.

@@ -308,7 +308,22 @@ def get_calibrated_rollout_data(
             "queue_strategy_a": q_a,
             "queue_strategy_b": q_b
         },
-        "radar": radar
+        "radar": radar,
+        # Uniform response shape across execution modes: a client can always read these
+        # keys. In calibrated mode nothing was ever pushed into a simulator, and saying so
+        # explicitly is the honest answer.
+        "control_evidence": {
+            "physical_control_applied": False,
+            "note": "本模式为标定数据集推演，未向 SUMO 仿真器下发任何控制指令。",
+            "baseline": {},
+            "strategy_a": {},
+            "strategy_b": {},
+        },
+        "strategy_inputs": {},
+        "scenario": {
+            "simulated_corridor": "标定数据集（未运行路网）",
+            "note": "标定经验数据，非实测；切换 run_physical_sandbox=true 可执行真实微观仿真。",
+        },
     }
 
 
@@ -526,26 +541,34 @@ async def execute_rollout(config: Optional[RolloutConfigInput] = None):
             q_a = traces.get("strategy_a", {}).get("queues", [])
             q_b = traces.get("strategy_b", {}).get("queues", [])
 
-            # Extract calibrated radar scores from evaluation comparison
-            comp_b = rollout_raw["comparisons"]["strategy_b"]
-            scores_dict_b = comp_b.get("radar_scores", {})
-            radar_b = [
-                int(scores_dict_b.get("通行效率 (Delay)", 92)),
-                int(scores_dict_b.get("空间治堵 (Queue)", 95)),
-                int(scores_dict_b.get("容量释放 (Throughput)", 88)),
-                int(scores_dict_b.get("运行平稳 (Reliability)", 90)),
-                int(scores_dict_b.get("绿色低碳 (Carbon)", 85))
+            # Radar dimension scores are taken verbatim from the evaluator's comparison.
+            # They must NOT be defaulted to showcase constants: if a scheme produced no
+            # scores, the dashboard has to show a missing state rather than plausible-looking
+            # numbers that were never computed.
+            RADAR_KEYS = [
+                "通行效率 (Delay)",
+                "空间治堵 (Queue)",
+                "容量释放 (Throughput)",
+                "运行平稳 (Reliability)",
+                "绿色低碳 (Carbon)",
             ]
 
+            def _radar_from(comp: Optional[dict]):
+                scores = (comp or {}).get("radar_scores") or {}
+                if not scores:
+                    return None
+                values = []
+                for k in RADAR_KEYS:
+                    v = scores.get(k)
+                    if v is None:
+                        return None
+                    values.append(int(round(float(v))))
+                return values
+
+            comp_b = rollout_raw["comparisons"]["strategy_b"]
             comp_a = rollout_raw["comparisons"].get("strategy_a", {})
-            scores_dict_a = comp_a.get("radar_scores", {}) if comp_a else {}
-            radar_a = [
-                int(scores_dict_a.get("通行效率 (Delay)", 65)),
-                int(scores_dict_a.get("空间治堵 (Queue)", 60)),
-                int(scores_dict_a.get("容量释放 (Throughput)", 68)),
-                int(scores_dict_a.get("运行平稳 (Reliability)", 62)),
-                int(scores_dict_a.get("绿色低碳 (Carbon)", 66))
-            ]
+            radar_a = _radar_from(comp_a)
+            radar_b = _radar_from(comp_b)
 
             radar_data = {
                 "dimensions": ["通行效率", "空间治堵", "容量释放", "运行平稳", "绿色低碳"],
@@ -560,8 +583,24 @@ async def execute_rollout(config: Optional[RolloutConfigInput] = None):
                 "simulation_duration": cfg.duration,
                 "seed": cfg.seed,
                 "incident_window": [cfg.incident_start, cfg.incident_end],
+                # Echo the requested scenario labels together with the corridor that was
+                # actually simulated. `corridor_choice` / `congestion_type` are descriptive
+                # labels: the physical sandbox always runs the bundled corridor and incident
+                # profile, so surfacing both makes that explicit instead of leaving the
+                # caller to assume the labels selected something.
+                "scenario": {
+                    "requested_corridor_choice": cfg.corridor_choice,
+                    "requested_congestion_type": cfg.congestion_type,
+                    "simulated_corridor": "scenarios/corridor.net.xml (J1-J3 bundled corridor)",
+                    "note": "物理沙盒固定运行内置走廊与事故工况；上述标签仅为展示用途，不改变路网。",
+                },
                 "kpis": rollout_raw["kpis"],
                 "comparisons": rollout_raw["comparisons"],
+                # Audit trail: which controls actually reached the simulator, and which
+                # detector inputs drove the plan. Promised by CHANGELOG ("说做了 vs 真做了
+                # 可对照") but previously dropped here, so no API client could verify it.
+                "control_evidence": rollout_raw.get("control_evidence", {}),
+                "strategy_inputs": rollout_raw.get("strategy_inputs", {}),
                 "time_series": {
                     "time_steps": time_steps,
                     "queue_baseline": q_base,

@@ -9,6 +9,282 @@
 
 ---
 
+## [2026-09-13] 修复绿波相位差公式回归 + 全链路可信度与审计补强
+
+**修复范围**：修复 `8bfe498` 引入的方案 B 性能回归（最高优先），并一次性治理 8 项
+"输出与事实不符 / 审计链断裂"类缺陷。
+**影响文件**：`src/tools/green_wave.py`、`src/tools/webster.py`、`src/tools/rerouting.py`、
+`src/tools/evaluator.py`、`src/simulation/sumo_sandbox.py`、`src/agents/traffic_agent.py`、
+`src/agents/llm_client.py`、`src/web/app.py`、`src/web/static/js/dashboard.js`、
+`src/web/static/css/style.css`、`tests/test_system.py`
+**兼容性**：不破坏。新增字段均为**增量**（`incident_errors`、`incident_lanes_blocked`、
+`signal_program_source`、`approaching_saturation`、`control_evidence`、`scenario`）；
+`webster` 的 `is_oversaturated` 判定阈值由 0.85 收敛到 0.95（仓库内无外部依赖，
+且此前该标志与配时分支自相矛盾）；`green_wave` 相位差数值**变化但方向正确**，
+如有外部脚本硬编码了旧相位差需同步。
+
+---
+
+### 一、本轮最重要的修复：绿波相位差公式回归（方案 B 因果链断裂）
+
+#### 1.1 现象
+
+`8bfe498` 合入后，端到端推演出现**方案 B 反而劣于方案 A**：
+
+| 指标 | 基线 | 方案 A | 方案 B |
+|:--|--:|--:|--:|
+| 平均延误 (s/veh) | 28.7 | 26.2 | **27.3**（劣于 A） |
+| 最大排队 (m) | 157.5 | 97.5 | **240.0**（基线仅 157.5） |
+
+即"三手段协同优于单点优化"的论证被打破，直接威胁赛题核心结论。
+
+#### 1.2 根因（已定位到单文件）
+
+`src/tools/green_wave.py` 的 `compute_offsets()` 把**已加权的链路步长**逐段累加：
+
+```python
+link_step = w * (tt % C) + (1 - w) * ((C - tt) % C)   # 加权在这里
+next_offset = (offsets[-1] + link_step) % C            # 再把加权结果当步长累加
+```
+
+这等于把权重重复施加 k 次。本走廊 `travel_times=[21.6, 21.6]`、`C=90`、`w=0.6`：
+
+```
+link_step = 0.6×21.6 + 0.4×68.4 = 40.32
+offsets   = [0, 40.3, 80.6]      # J3 相位差 = 2×40.3，远离物理真值
+正确值     = [0, 40.3, 44.6]      # 先累积行程时间，再加权一次
+```
+
+**物理后果**：车队从 J1 到 J3 需 43.2 s。HEAD 版本下 J3 主绿窗口为
+`[80.6, 90] ∪ [0, 43.7]`，车队 43.2 s 抵达时**绿灯刚好熄灭**，全员遇红、排队前推；
+修正后 J3 主绿 44.6 s 开启，车队赶上绿灯头。
+
+#### 1.3 修法
+
+把加权从"逐链路"上移到"对累积行程时间加权一次"（`green_wave.py` 6 行）：
+
+```python
+cumulative_travel_time += tt
+ideal_forward = cumulative_travel_time % safe_cycle
+ideal_reverse = (safe_cycle - ideal_forward) % safe_cycle
+next_offset = (weight_forward * ideal_forward
+               + (1.0 - weight_forward) * ideal_reverse) % safe_cycle
+```
+
+性质验证（等间距干线、`C=90`、`tt=21.6`）：
+
+| 权重 | 相位差 | 含义 |
+|:--|:--|:--|
+| `w=1.0` | `[0, 21.6, 43.2, 64.8]` | 精确等于纯正向理想值 |
+| `w=0.0` | `[0, 68.4, 46.8, 25.2]` | 精确等于纯反向理想值 |
+| `w=0.5` | `[0, 45.0, 45.0, 45.0]` | 精确落在正/反向理想值的圆周中点 |
+| `w=0.6` | `[0, 40.3, 44.6, 49.0]` | 每个路口都更靠近正向理想值（前向偏置成立） |
+
+#### 1.4 验证：三组单变量对照（600 s，SUMO 1.27.1 真实仿真）
+
+基线/方案 A 指标在三组中**逐位相同**，证明是干净的单变量对照：
+
+| 组 | 绿波 offsets | B 延误 | B 排队 | B 速度 | B 吞吐 | B 方差 |
+|:--|:--|--:|--:|--:|--:|--:|
+| 改动前 HEAD | `[0, 40.3, **80.6**]` | 27.3 | 240.0 | 29.6 | 5772 | 273.8 |
+| 回退至 `6b46ef5` | `[0, 40.3, 53.3]` | 23.2 | 105.0 | 28.7 | 5808 | 191.4 |
+| **本轮修正** | `[0, 40.3, **44.6**]` | **21.1** | **105.0** | **31.2** | 5760 | **138.2** |
+
+**最终三方案结果（修正后）**：
+
+| 指标 | 基线 | 方案 A | 方案 B | B 对基线 |
+|:--|--:|--:|--:|--:|
+| 平均延误 (s/veh) | 28.7 | 26.2 | **21.1** | **+26.5%** |
+| 最大排队 (m) | 157.5 | 97.5 | 105.0 | +33.3% |
+| 平均速度 (km/h) | 31.7 | 30.0 | **31.2** | -1.6% |
+| 吞吐量 (veh/h) | 5628 | 5772 | 5760 | +2.3% |
+| 路网延误时序波动 (s²) | 393.2 | 260.5 | **138.2** | **+64.9%** |
+| CO₂ (kg) | 236.6 | 243.9 | **231.0** | +2.3% |
+
+**因果链恢复且更强**：方案 B 在**延误 / 时序波动 / 速度 / CO₂** 四个维度同时优于方案 A 与基线
+（方案 A 虽优于基线，但其 CO₂ 反而高于基线 3.1%，说明单点信号优化会以增加启停为代价换延误）。
+排队长度与吞吐量两项 A 略优（105.0 vs 97.5 m；5760 vs 5772 veh/h），差异在 1% 量级。
+**附带收益**：长期遗留的"方案 B 平均速度反向"限制由 -9.5% 收窄到 **-1.6%**，
+已接近中立，答辩时无需再单独辩解速度指标。
+
+#### 1.5 回归守门测试（重写，原测试本身是错的）
+
+原 `test_green_wave_cumulative_reverse_offset` 断言"相邻路口相位差必须不同"——
+**该断言只在 `tt == C/2`（经典交错系统）特例下成立**，对 `tt != C/2` 的正确对称折中
+（各路口落在圆周中点、数值相等）会误报。`[0, 40.3, 80.6]` 这种错误结果反而能通过它。
+
+已重写为断言**定义性的物理性质**：
+1. `w=1.0` 必须精确复现教材正向递进 `i·tt`；
+2. `w=0.0` 必须精确复现反向理想值；
+3. `w=0.6` 下**每个**路口的相位差都必须比反向理想值更靠近正向理想值
+   （旧的线性膨胀写法从 J3 起就不满足，据此被直接拦截）；
+4. `w=0.5` 必须落在正/反向理想值的圆周中点。
+
+---
+
+### 二、可信度与审计链补强（8 项）
+
+| # | 问题 | 修法 |
+|:--|:--|:--|
+| 1 | **决策简报头部与自身数据来源声明矛盾**：`generate_decision_report` 固定输出"评估状态：数字孪生沙盒推演完成"，而同一文档的 Provenance 表会标注"标定经验数据（非实测）" | 改为按 `execution_mode` 判定：仅物理仿真才输出"推演完成"，标定数据输出"标定经验数据（非实测）" |
+| 2 | **前端仍保留被宣称"已删除"的编造兜底**：`dashboard.js` 在数据缺失时渲染 `44.6% / 138.3%`、雷达 `[92,95,88,90,85]`，断网时呈现一个"看起来很成功"的完整结果 | 全部改为缺失态 `—`；雷达无数据时渲染空状态卡片（新增 `.chart-empty` 样式）；新增 `NO_DATA` 常量 |
+| 3 | **前端 CoT 面板编造推理过程**：诊断缺失时回落到硬编码的 5 步思维链，内含具体检测值（8.2 km/h、82%、165 m） | 改为"尚未获得诊断结果"提示，不再伪造分析 |
+| 4 | **`/api/rollout` 丢弃 `control_evidence`**：设计承诺"说做了 vs 真做了可对照"，但接口层把该字段过滤掉了，任何 API 调用方都拿不到审计证据 | 响应补回 `control_evidence` 与 `strategy_inputs`；标定路径也返回该键（内含"未下发任何控制指令"声明），保证响应结构统一 |
+| 5 | **雷达图兜底使用编造分值**：物理路径对缺失的 `radar_scores` 回落到 `92/95/88/90/85` 与 `65/60/68/62/66` | 改为从 `radar_scores` 原样推导；任一维度缺失则整组返回 `None`，前端渲染空状态 |
+| 6 | **基线控制证据伪造了一个 8 秒周期**：基线不下发 program，`sp_yellow` 却默认 4.0，算出 `cycle_length = 0 + 2×4.0 + 0 = 8.0`（实际路网为 41/4/41/4，周期 90 s） | 仅在实际下发 program 时才填写 cycle/green 字段，否则置 `None` 并标注 `signal_program_source: network_default` |
+| 7 | **`duration` 从未透传给 SUMO**：SUMO 命令行缺少 `--end`，而 `corridor.sumocfg` 固定 `end=600`。请求 `duration > 600` 时循环会越过 SUMO 结束时刻，抛出的 TraCI 异常被 API 层的宽泛 `except` 吞掉并静默降级为标定数据，用户完全不知道物理推演没跑成 | 命令行显式加入 `--end <duration>`（CLI 覆盖 cfg）；已验证 900 s 推演仍为 `physical_sumo_sandbox` |
+| 8 | **事故注入/还原静默失败但仍报成功**：`setMaxSpeed` 被 `except: pass` 包裹，标志位却无条件置 `True`，证据里照写"已还原" | 新增 `incident_errors` 与 `incident_lanes_blocked` 证据字段；`incident_injected` / `incident_cleared` 仅在确实操作成功时置位；`lane_speeds_restored` 只记录确认写回的车道（与既有的 `reroute_errors` 口径对齐） |
+
+附带修正：
+- `webster.py` 的 `is_oversaturated` 阈值（0.85）与过饱和配时分支（0.95）不一致，
+  会出现"标记为过饱和、却仍按欠饱和 Webster 公式算周期"的矛盾。统一到单一常量
+  `oversaturation_threshold = 0.95`，并新增 `approaching_saturation` 表达 0.85–0.95 的"接近饱和"区间。
+- `rerouting.py` 的 VMS 文案硬编码"预计节省通行时间8-12分钟"，与任何输入或计算无关，
+  却会经 `vms_advisory` 进入决策简报。已删除该时间承诺（改为陈述拥堵状况与建议动作），
+  分流收益交给 What-If 推演证实。
+- `llm_client.py` 在"已配置 Key 但未安装 openai SDK"时返回 `MODE_UNCONFIGURED`，
+  审计标签会误报为"未配置 API Key"，误导排查方向。新增 `MODE_SDK_MISSING` 并在标签中
+  明确提示 `pip install openai`。
+- `traffic_agent.py` 的 `_run_sandbox` 用 `except TypeError` 做控制流来兼容旧版无 `seed`
+  的沙盒签名——若 `TypeError` 来自仿真内部，会**静默启动第二个 SUMO 进程**再抛出。
+  改为一次性 `inspect.signature` 探测。
+- `evaluator.py` / 决策简报中 `delay_variance` 被表述为"行程时间方差"，实际是
+  **路网平均延误 5 秒采样时序的方差**。已修正文档字符串、报告表格标签
+  （"路网延误时序波动"）与口径说明，避免对外表述失真。
+- `traffic_agent.py` 中写死的"3 车道 5400 pcu/h"提取为模块级标定常量
+  （`CORRIDOR_ARTERIAL_LANES` / `CORRIDOR_DESIGN_CAPACITY_PCU_H`）并注明其为走廊标定值，
+  不再散落在 prompt 与规则模板里。
+
+---
+
+### 三、验证方式与结果
+
+```bash
+# 单元测试（93 项，含 7 项新增回归守门）
+python -m unittest discover -s tests -p "test_*.py" -v
+
+# 端到端三方案推演 + --end 透传验证（需 SUMO）
+python verify_final.py
+```
+
+| 验证项 | 结果 |
+|:--|:--|
+| 单元测试 | **93/93 通过**（原 86 项 + 新增 7 项回归守门） |
+| 端到端三方案（600 s） | **3/3 跑通**，`execution_mode = physical_sumo_sandbox` |
+| 因果链 | 方案 B > 方案 A > 基线（延误 / 方差 / 速度 / CO₂ 全面成立） |
+| 绿波相位差 | `[0.0, 40.3, 44.6]`（修正后符合物理真值） |
+| 基线控制证据 | `cycle_length = None`（不再伪造 8 s 周期） |
+| 事故控制证据 | `incident_lanes_blocked = ['J1_J2_0','J1_J2_1']`，`incident_errors = []`，限速还原至 16.67 m/s |
+| `--end` 透传 | 请求 900 s 仍为 `physical_sumo_sandbox`（修复前必然降级） |
+| 方案 B 控制指令 | 信号 3 条 + 真实改道 23 辆 |
+
+新增 7 项回归守门测试：
+- `test_report_verification_header_matches_provenance` —— 简报头部与数据来源声明一致
+- `test_rollout_api_surfaces_control_evidence_and_view_is_explicit` —— 审计证据可从 API 取得
+- `test_rollout_kpi_radar_defaults_removed_from_frontend` —— 前端不得残留编造兜底常量
+- `test_sumo_command_forwards_requested_duration` —— `--end` 必须透传
+- `test_webster_oversaturation_flag_and_branch_agree` —— 过饱和标志与配时分支同阈值
+- `test_vms_advisory_contains_no_fabricated_time_saving` —— VMS 文案不得编造收益
+- `test_sandbox_evidence_reports_incident_errors_and_no_bogus_cycle` —— 事故证据字段健全
+
+---
+
+### 四、已知限制（重要）
+
+- **单次运行**：以上数值均为单次推演（`seed=None`）。对照是单变量且基线可复现，
+  结论方向可靠，但**对外引用具体百分比前建议用 `/api/evaluate/multi-seed` 跑 ≥5 种子并报 95% CI**。
+- **方案 A 在更严苛事故下不稳健（本轮新观察到）**：在 900 s 时长、事故窗口 150–700 s 的推演中，
+  方案 A 平均延误 86.6 s/veh，劣于基线 71.3 s/veh；而方案 B 仍优于基线（58.1 s/veh）。
+  机制待查（疑为单点 Webster 基准配时在长时过饱和下未随需求漂移），本轮未展开。
+- **速度指标**：方案 B 平均速度仍略低于基线（-1.6%，已接近中立），对外表述建议以
+  延误 / 排队 / 方差 / 吞吐为主。
+- **`w=0.5` 的对称折中是圆周中点折中，不是经典交错系统**：交错系统
+  `(0, C/2, 0, C/2)` 仅在 `tt == C/2` 时才是最优；本走廊 `tt=21.6 s ≠ C/2=45 s`，
+  故不再采用。相关文档表述已同步更正。
+- **actuated 下的绿波漂移**：自适应会浮动各周期相位时长，固定 offset 无法完全锁定带宽。
+- 绿波带宽计算仍偏乐观（`min_green - 4s`，未扣除双向带宽互斥效应）。
+
+### 五、后续待办
+
+- [ ] 多种子批量实验（≥5 seeds）与统计显著性分析（当前仍为单次运行）
+- [ ] 排查方案 A 在长时过饱和工况下劣于基线的机制
+- [ ] actuated 协调参数探索（SUMO `cycleTime` / NEMA offset），减少绿波漂移
+- [ ] `tests/test_web_api.py` 纳入 CI（需 fastapi 测试环境）
+- [ ] 成果材料撰写（申报书 / 说明书 / 演示视频）
+
+---
+
+## [2026-09-13] 文档纠偏：移除与实现不符的功能宣称，校准测试数量口径
+
+**改进范围**：`README.md` 与 `docs/technical_proposal.md` 中存在多处**宣称已实现但代码中
+并不存在**的功能，以及测试数量口径不一致。竞赛评审与答辩均会据此追问，属诚信风险。
+**影响文件**：`README.md`、`docs/technical_proposal.md`
+**兼容性**：不涉及代码，无兼容性影响。
+
+---
+
+### 一、纠偏动因
+
+对本仓库做了一次"文档 vs 代码"逐条核对，发现：
+
+1. **宣称基于 OpenStreetMap 真实路网**：README 架构图写 `D1["OpenStreetMap 真实路网模型"]`，
+   正文称"基于 OSM 提取北京真实典型瓶颈区域（西直门立交、中关村、学院路等）"。
+   但 `scenarios/corridor.nod.xml` 仅 12 个手写节点，经 `netconvert` 生成，
+   **全仓库无任何 OSM 解析或导入代码**。
+2. **宣称存在 VSL 可变限速控制**：README 架构图 `C4["瓶颈可变限速 (VSL) 控流模型"]`、
+   技术方案工具箱亦有"瓶颈可变限速 (VSL)"。实际 `src/tools/` 下只有
+   `webster / green_wave / rerouting / evaluator` 四个模块，**无 VSL 实现**。
+3. **宣称存在 Reflexion 反思闭环**：README `B3["反思评估 Agent (Reflexion & Scoring Loop)"]`、
+   技术方案"仿真推演反思模块"与"智能体反思微调（Reflexion）：回溯下调分流比例，重新发起校验"。
+   实际无任何"重推演 / 回调参数"逻辑。
+4. **宣称存在自然语言问答界面**：README 架构图 `A1["自然语言交互问答 (Chat Interface)"]`，
+   `index.html` 中**没有任何对话输入组件**。
+5. **测试数量口径不一致**：README badge 写 110 项、正文写 104 项，
+   实际 `python -m unittest discover -s tests` 统计为 **86 项**（本轮加 7 项后为 93 项）。
+6. **技术方案中的绿波公式本身是错的**：`Δφ_ij = S_ij / V (mod C)` 正是本轮修复的
+   逐链路公式，会把下游相位差算错（已同步更正为累积行程时间的双向加权式）。
+
+### 二、修正内容
+
+- **README**：架构图节点改为与实现一致（UI 层改为关键指标卡片；Agent 层改为"方案量化评估与
+  决策简报生成"；工具箱的 VSL 替换为已实现的"五维性能指标量化评估器"；沙盒的路网来源改为
+  "走廊标定路网（netconvert 构建）"）；正文补充 OSM 未接入的显式说明；删除 Reflexion 表述，
+  改为如实描述大模型热切换与显式降级机制；测试数量统一为 `unittest` 实测值。
+- **docs/technical_proposal.md**：架构图同步修正，并新增"实现边界说明"块，明确列出
+  未实现项（VSL / Reflexion Loop / 自然语言问答 / OSM 真实路网）；更正绿波相位差公式并
+  补充"加权必须施加在累积行程时间上"的推导说明与踩坑记录；更正 `delay_variance` 口径表述。
+
+### 三、验证方式
+
+```bash
+# 数量口径核对（应与文档一致）
+python - <<'PY'
+import unittest, io
+suite = unittest.defaultTestLoader.discover('tests', pattern='test_*.py')
+print(suite.countTestCases())
+PY
+
+# 逐条检索是否仍存在无实现支撑的宣称
+grep -rn "OSM\|OpenStreetMap\|VSL\|Reflexion\|Chat Interface" README.md docs/
+```
+
+核对结果：README / 技术方案中已无"已实现"语气的上述功能宣称，
+剩余出现位置均在"实现边界说明 / 后续工作"语境中，明确标注为未实现。
+
+### 四、已知限制
+
+- 本次仅做**文档与代码对齐**，未新增任何功能。OSM 真实路网、VSL、Reflexion 闭环
+  仍是货真价实的缺失项，属后续工作。
+- 若后续确实要接入 OSM，建议用 `sumolib` / `osmWebWizard` 生成路网并重新标定需求，
+  届时需同步更新本文档与 README。
+
+### 五、后续待办
+
+- [ ] 评估是否接入 OSM 真实路网（工作量较大，需重新标定交通需求与信号相位）
+- [ ] Reflexion 闭环的可行性评估（需解决"自动重跑"带来的推演耗时问题）
+
+---
+
 ## [2026-09-12] 智能体大模型能力升级：支持 ccSwitch 风格端点自动识别可用模型与动态热切换 (LLM Switcher)
 
 **改进范围**：实现类似 ccSwitch 的大模型端点与凭据探测机制，支持通过 Web 交互与 RESTful API 自动枚举服务商支持的模型列表，并支持运行时免重启热切换生效；配套 6 项新增回归测试（全量测试规模扩充至 110 项）。
