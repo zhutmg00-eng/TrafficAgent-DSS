@@ -569,8 +569,8 @@ class TestFastAPIDecisionHubStress(unittest.TestCase):
             self.assertEqual(resp_rollout.status_code, 200)
             data_r = resp_rollout.json()
             self.assertTrue(data_r["success"])
-            self.assertEqual(data_r["execution_mode"], "calibrated_empirical_fallback")
-            self.assertIn("SUMO Sandbox notice", data_r.get("fallback_reason", ""))
+            self.assertEqual(data_r["execution_mode"], "mesoscopic_network")
+            self.assertIn("SUMO", data_r.get("fallback_reason", ""))
 
             # 2. /api/evaluate/multi-seed with physical sandbox forced
             resp_multi = self.client.post(

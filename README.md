@@ -4,7 +4,7 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![CI-Build](https://github.com/zhutmg00-eng/TrafficAgent-DSS/actions/workflows/ci.yml/badge.svg)](https://github.com/zhutmg00-eng/TrafficAgent-DSS/actions)
 [![Simulation-SUMO](https://img.shields.io/badge/Simulation-SUMO%20%2F%20TraCI-brightgreen.svg)](https://eclipse.dev/sumo/)
-[![Tests-93%20Passed](https://img.shields.io/badge/Tests-93%20Passed-success.svg)](tests/)
+[![Tests-107%20Passed](https://img.shields.io/badge/Tests-107%20Passed-success.svg)](tests/)
 [![Architecture-LLM%20Agent](https://img.shields.io/badge/Architecture-LLM%20Agent%20%26%20MAS-orange.svg)](https://github.com/zhutmg00-eng/TrafficAgent-DSS)
 [![Competition-ITSAC%202026](https://img.shields.io/badge/Competition-ITSAC%202026%20%E8%B5%9B%E9%A2%982-red.svg)](http://www.its-china.org.cn/)
 
@@ -95,12 +95,20 @@ flowchart TB
 ```text
 TrafficAgent-DSS/
 ├── docs/                                  # 系统技术架构与理论方案
-│   └── technical_proposal.md              # 详细技术方案、数学建模与算法设计
+│   ├── technical_proposal.md              # 详细技术方案、数学建模与算法设计
+│   └── review_findings.md                 # 审查报告与系统真实性演进说明
+├── scripts/                               # 工具脚本
+│   ├── build_network_from_osm.py          # OSM 导出 -> 真实路网 JSON 编译
+│   └── fetch_osm_network.sh               # 一键抓取并编译真实路网脚本
 ├── src/                                   # 系统源码
 │   ├── agents/                            # LLM 智能体决策核心
+│   │   ├── llm_client.py                  # 大模型多后端统一调用与模型自动发现客户端
 │   │   └── traffic_agent.py               # 智能体核心逻辑、CoT归因诊断与决策简报生成
+│   ├── data/                              # 路网拓扑与几何数据层
+│   │   └── network.py                     # OSM 真实路网数据模型（拓扑/几何/瓶颈选取）
 │   ├── simulation/                        # 交通仿真与数字孪生
-│   │   └── sumo_sandbox.py                # SUMO 进程与 TraCI 控制接口微观沙盒
+│   │   ├── sumo_sandbox.py                # SUMO 进程与 TraCI 控制接口微观沙盒
+│   │   └── mesoscopic.py                  # 路网级中观推演引擎（无需 SUMO，逐路段数据）
 │   ├── tools/                             # 经典交通工程工具箱
 │   │   ├── webster.py                     # Webster 最佳信号配时计算优化器
 │   │   ├── green_wave.py                  # 干线动态绿波协调算法
@@ -108,6 +116,7 @@ TrafficAgent-DSS/
 │   │   └── evaluator.py                   # 五维交通工程性能指标量化评估器
 │   └── web/                               # 现代化解耦决策支持 Web 服务与大屏
 │       ├── app.py                         # FastAPI RESTful API 服务与决策调度入口
+│       ├── network_api.py                 # 真实路网、检测器与行动清单 API
 │       └── static/                        # 响应式 Web 数字孪生大屏（HTML5/CSS3/ES6）
 │           ├── index.html                 # 数字孪生决策大屏单页应用 (SPA)
 │           ├── css/style.css              # 极客暗黑/政企浅色双模主题样式表
@@ -115,14 +124,16 @@ TrafficAgent-DSS/
 │               ├── dashboard.js           # 异步决策管道控制与可视化交互脚本
 │               └── vendor/
 │                   └── echarts.min.js     # 本地内嵌 ECharts 5 库（支持100%离线答辩）
-├── scenarios/                             # SUMO 微观路网与交通流工况
+├── scenarios/                             # 真实路网与 SUMO 微观仿真工况
+│   ├── network_xizhimen.json              # 西直门真实路网（OSM，591 节点/771 路段/143.2 km）
 │   ├── build_scenario.py                  # 走廊路网与仿真场景生成脚本
 │   ├── corridor.net.xml                   # 典型双通道干线路网拓扑
 │   ├── corridor.rou.xml                   # 高峰潮汐与突发事故交通需求
 │   └── corridor.sumocfg                   # SUMO 仿真配置文件
-├── tests/                                 # 自动化测试套件（`unittest` 实测 93 项，100% 通过）
+├── tests/                                 # 自动化测试套件（全量 107 项测试 100% 通过）
 │   ├── test_system.py                     # 交通工程算法与智能体推理单元测试 (44 项)
-│   ├── test_web_api.py                    # RESTful Web API 与路由集成测试 (25 项)
+│   ├── test_web_api.py                    # RESTful Web API 与路由集成测试 (29 项)
+│   ├── test_network_mesoscopic.py         # 真实路网与中观仿真引擎专项测试 (10 项)
 │   └── test_empirical_challenger_2.py     # 极限边界与鲁棒性挑战压力测试 (24 项)
 ├── .gitignore                             # Git 忽略配置
 ├── requirements.txt                       # Python 依赖清单 (FastAPI/TraCI/Uvicorn)
@@ -191,6 +202,21 @@ uvicorn src.web.app:app --reload --port 8000
 | `LLM_TIMEOUT` | 可选 | 请求超时时间（秒，默认 30.0 秒） |
 
 > 🛡️ **严格降级机制（可信度保证）**：若未配置密钥、网络断开或目标服务商接口超时，系统会自动降级为确定性专家规则模板，并在 API 响应（`reasoning_mode` / `narrative_mode`）与导出的《决策支持简报》的「数据来源与可信度声明」中**明确如实标注降级状态**——既保证演示与答辩高可用不中断，又保证科研学术诚信。
+
+---
+
+## 🧭 8. 真实路网与数据层增强
+
+> 针对“无真实路网图 / 方案缺少实操指令 / 数据样本偏少”等实际业务反馈，系统新增真实路网拓扑数据层、路网级中观推演引擎与可执行行动清单。详细审查过程与架构演进见 [`docs/review_findings.md`](docs/review_findings.md)。
+
+- **真实大都市路网**：`scenarios/network_xizhimen.json` 由 `scripts/build_network_from_osm.py` 从 OpenStreetMap（ODbL 协议）提取编译 —— 覆盖北京西直门立体综合枢纽 **591 节点 / 771 路段 / 143.2 km / 92 个交叉口**，含真实几何坐标与道路名称（西直门外大街、北二环、德胜门西大街、学院南路等）。
+- **确定性中观推演引擎** `src/simulation/mesoscopic.py`：基于 HCM/Webster 延误与 Little 定律排队理论，**无需本地 SUMO 也能秒级运行**，输出全网逐路段、逐时间步 `speed/queue/flow/occupancy/delay` 高密度仿真数据。
+- **决策服务与 API 扩展**：
+  - `GET /api/network` —— 实时路网拓扑与拥堵色阶着色数据（支持前端 SVG 数字孪生地图无缝渲染）；
+  - `GET /api/detectors` —— 逐路段实时虚拟检测器排队与通行状态明细表；
+  - `POST /api/action-plan` —— 生成直面交管一线、责任到人（交警/信号机/诱导屏）的 7 步操作作战清单；
+  - `POST /api/rollout` —— 采用三级推演阶梯（SUMO 微观沙盒 $\rightarrow$ 真实路网中观引擎 $\rightarrow$ 标定基准兜底），明确在返回结构中如实声明推演引擎与数据来源，杜绝假装仿真。
+- **前端数字化大屏增强**：新增“真实路网数字孪生矢量地图”、“行动指令清单”与“路网检测器全量明细表”三大核心区块。
 
 ---
 

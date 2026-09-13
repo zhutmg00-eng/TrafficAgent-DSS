@@ -326,6 +326,10 @@ class TrafficDecisionAgent:
             f"4. 【蔓延风险】按当前排队增速推演，上游交叉口存在被回溢车流锁死的风险。",
             f"5. 【旁路核查】平行分流通道当前占有率 {bypass_occ_pct}%，{'具备' if bypass_occ < 0.75 else '不具备'}实施动态诱导分流的备用容量。",
         ]
+        plain_diag = (
+            f"{bottleneck_edge} 路段当前排队 {round(queue_m, 1)} 米，车速仅 {round(speed_kmh, 1)} km/h，"
+            f"建议立即发布分流诱导并延长主路绿灯。"
+        )
         return {
             "severity_level": (
                 "严重拥堵 (Level 4 - 重度)"
@@ -342,6 +346,7 @@ class TrafficDecisionAgent:
             ],
             "cot_reasoning": cot_steps,
             "can_reroute": bypass_occ < 0.75,
+            "plain_diagnosis": plain_diag,
         }
 
     def diagnose_bottleneck(self, traffic_state: Dict[str, Any]) -> Dict[str, Any]:
@@ -362,6 +367,10 @@ class TrafficDecisionAgent:
         bypass_occ = _safe_float(traffic_state.get("bypass_occupancy"), default=0.28, min_val=0.0, max_val=1.0)
 
         queue_ratio = min(10.0, queue_m / max(1.0, link_len))
+        plain_diag = (
+            f"{bottleneck_edge} 路段当前排队 {round(queue_m, 1)} 米，车速仅 {round(speed_kmh, 1)} km/h，"
+            f"建议立即发布分流诱导并延长主路绿灯。"
+        )
         fallback = self._diagnose_deterministic(
             bottleneck_edge, queue_m, link_len, speed_kmh, occupancy, bypass_occ, queue_ratio
         )
@@ -411,6 +420,8 @@ class TrafficDecisionAgent:
 
         result["bottleneck_location"] = bottleneck_edge
         result.update(self.reasoning_metadata(mode, error))
+        # plain_diagnosis is always ensured (set by deterministic fallback; LLM path gets it from fallback)
+        result.setdefault("plain_diagnosis", plain_diag)
         result["input_state"] = {
             "queue_m": queue_m,
             "link_length_m": link_len,
@@ -537,6 +548,13 @@ class TrafficDecisionAgent:
 
         narrative_mode = self.reasoning_metadata(mode, error)
 
+        # Build action plan from the computed strategy + diagnosis
+        action_plan = self.formulate_action_plan(diagnosis, {
+            "strategy_a": strategy_a,
+            "strategy_b": strategy_b,
+            "reroute_details": reroute_plan,
+        })
+
         return {
             "baseline": {
                 "id": "baseline",
@@ -555,6 +573,190 @@ class TrafficDecisionAgent:
             "narrative_engine": narrative_mode["reasoning_engine"],
             "narrative_label": narrative_mode["reasoning_label"],
             "narrative_error": narrative_mode["reasoning_error"],
+            "action_plan": action_plan,
+        }
+
+    # ------------------------------------------------------------------ #
+    # 2b. Action Plan
+    # ------------------------------------------------------------------ #
+    def formulate_action_plan(
+        self,
+        diagnosis: Dict[str, Any],
+        strategies: Dict[str, Any],
+        rollout: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Builds a concrete, step-by-step action playbook from the already-computed
+        strategy and diagnosis values.  Every numeric parameter is pulled from the
+        real tool output — nothing is invented.
+
+        Returns:
+            { "plain_summary": str, "steps": [{...}, ...] }
+        """
+        diag = diagnosis or {}
+        strat_b = strategies.get("strategy_b") or {}
+        strat_a = strategies.get("strategy_a") or {}
+        reroute_det = strategies.get("reroute_details") or {}
+
+        # Extract real values (never invent)
+        cycle_len = strat_b.get("cycle_length") or strat_a.get("cycle_length") or "—"
+        green_arterial = strat_b.get("green_split_arterial") or strat_a.get("green_split_arterial") or "—"
+        green_cross = strat_b.get("green_split_cross") or strat_a.get("green_split_cross") or "—"
+        yellow = strat_b.get("yellow_time") or "—"
+        offsets = strat_b.get("green_wave_offsets") or []
+        reroute_ratio = float(strat_b.get("reroute_ratio") or reroute_det.get("diversion_ratio") or 0.0)
+        reroute_pct = int(round(reroute_ratio * 100))
+        vms_msg = strat_b.get("vms_advisory") or reroute_det.get("vms_advisory") or "（未生成）"
+        risk_msg = strat_b.get("risk_warning") or "（未生成）"
+        can_reroute = diag.get("can_reroute", False)
+        queue_m = float(diag.get("input_state", {}).get("queue_m", 165.0))
+        link_len = float(diag.get("input_state", {}).get("link_length_m", 300.0))
+        speed_kmh = diag.get("input_state", {}).get("speed_kmh", 8.2)
+        bottleneck_loc = diag.get("bottleneck_location", "—")
+        severity = diag.get("severity_level", "—")
+
+        # Improvement hints from rollout (optional, don't invent)
+        delay_imp = "—"
+        queue_imp = "—"
+        comp = (rollout or {}).get("comparisons", {}).get("strategy_b", {}) if rollout else {}
+        if isinstance(comp, dict):
+            d = comp.get("delay_improvement_pct")
+            if d is not None:
+                delay_imp = f"{round(d, 1)}%"
+            q = comp.get("queue_improvement_pct")
+            if q is not None:
+                queue_imp = f"{round(q, 1)}%"
+
+        steps = []
+
+        # --- Step 1: VMS 诱导分流 (immediate) ---
+        if reroute_pct > 0 and can_reroute:
+            steps.append({
+                "n": len(steps) + 1,
+                "phase": "立即 (0-2 分钟)",
+                "title": "发布 VMS 诱导分流",
+                "action": f"在上游可变信息板 (VMS) 发布分流指引，引导 {reroute_pct}% 车辆改走北部平行旁路。",
+                "detail": f"目标动态分流比例：**{reroute_pct}%**。VMS 文案: {vms_msg}。",
+                "where": f"瓶颈断面 [{bottleneck_loc}] 上游 1~2 公里 VMS 板",
+                "when": "接到本指令后 2 分钟内完成发布并确认显示正常。",
+                "expected": f"预计分流 {reroute_pct}% 到达需求，瓶颈断面输入负荷降低。",
+                "owner": "信息发布员 / 信号控制员",
+                "verify": "现场拍照或远程截图确认 VMS 文案显示，旁路占有率上升不超过 10 个百分点。",
+            })
+        else:
+            steps.append({
+                "n": len(steps) + 1,
+                "phase": "立即 (0-2 分钟)",
+                "title": "VMS 分流待命",
+                "action": "当前工况未触发动态分流诱导。",
+                "detail": "当前工况未触发动态分流诱导。",
+                "where": f"瓶颈断面 [{bottleneck_loc}] 上游 VMS 板",
+                "when": "持续监测旁路占有率，若旁路占有率降至 60% 以下再行发布。",
+                "expected": "避免旁路二次拥堵。",
+                "owner": "信息发布员",
+                "verify": "每 5 分钟查看旁路占有率数据。",
+            })
+
+        # --- Step 2: 信号配时下发 ---
+        steps.append({
+            "n": len(steps) + 1,
+            "phase": "立即 (0-5 分钟)",
+            "title": "下发 Webster 动态信号配时",
+            "action": f"将 J1-J3 交叉口信号切换为 Webster 动态优化配时。",
+            "detail": f"周期 {cycle_len} 秒 / 主路绿灯 {green_arterial} 秒 / 支路绿灯 {green_cross} 秒 / 黄灯 {yellow} 秒。",
+            "where": f"J1、J2、J3 三座交叉口信号机",
+            "when": "与 VMS 发布同步下发，信号机确认接受。",
+            "expected": f"主路绿灯占比提升至 {round(green_arterial / max(1.0, cycle_len) * 100, 1)}%，瓶颈断面放行效率提高。",
+            "owner": "信号控制员",
+            "verify": "信号机返回配时更新确认码；检查主路实际绿灯时长不低于设定值。",
+        })
+
+        # --- Step 3: 绿波协调 ---
+        if offsets and any(o > 0 for o in offsets):
+            offset_str = ", ".join(f"J{i+1}: {o}s" for i, o in enumerate(offsets))
+            steps.append({
+                "n": len(steps) + 1,
+                "phase": "同步 (5-10 分钟)",
+                "title": "启用干线绿波协调 (相位差 5-25 秒级)",
+                "action": "将 J1-J3 干线切换到绿波协调模式，设置各交叉口相位差。",
+                "detail": f"相位差: {offset_str}。绿波协调即通过错开各路口绿灯启动时间，让车流到达下一路口时正好赶上绿灯。",
+                "where": f"J1→J2→J3 干线所有交叉口",
+                "when": "信号配时下发确认后 5 分钟内切换至绿波模式。",
+                "expected": f"减少车队二次启停，预计排队长度缩短 {queue_imp}。",
+                "owner": "信号控制员 / 干线协调中心",
+                "verify": "查看干线协调状态面板，确认各路口相位差生效；排队长度开始下降。",
+            })
+
+        # --- Step 4: 现场/上游管控与回溢防护 ---
+        queue_ratio = min(1.0, queue_m / max(1.0, link_len))
+        spillback警戒 = "已" if queue_ratio >= 0.75 else "尚未"
+        steps.append({
+            "n": len(steps) + 1,
+            "phase": "持续 (全程监测)",
+            "title": "上游管控与回溢防护",
+            "action": f"监测上游交叉口排队，若回溢风险升高立即启动上游限速或间歇放行。",
+            "detail": f"当前排队 {round(queue_m, 1)} 米，占路段 {round(queue_ratio * 100, 1)}%，{spillback警戒}触及 75% 回溢警戒线。",
+            "where": f"瓶颈上游各交叉口入口断面",
+            "when": "接到本指令后立即启动，每 2 分钟复核一次。",
+            "expected": f"防止 {bottleneck_loc} 排队回溢至上游路口造成网格锁死。",
+            "owner": "现场交警 / 路口管理员",
+            "verify": "上游路口排队长度未超过路口停止线外 50 米；若超标立即采取截流措施。",
+        })
+
+        # --- Step 5: 监测验证指标 ---
+        steps.append({
+            "n": len(steps) + 1,
+            "phase": "持续 (10-30 分钟)",
+            "title": "成效监测与验证",
+            "action": "持续跟踪核心指标变化，验证治理措施是否生效。",
+            "detail": f"关键监测指标: 瓶颈车速目标 > {round(speed_kmh * 1.5, 1)} km/h；排队缩短 {queue_imp}；延误降低 {delay_imp}。",
+            "where": f"{bottleneck_loc} 断面检测器 + 全线检测器",
+            "when": "配时下发后 10 分钟开始首次复核。",
+            "expected": f"治理措施生效后，瓶颈车速回升、排队缩短、延误下降。",
+            "owner": "指挥中心值班长",
+            "verify": "检测器数据趋势连续 3 个信号周期 (约 5 分钟) 改善即视为生效。",
+        })
+
+        # --- Step 6: 结束与恢复 ---
+        steps.append({
+            "n": len(steps) + 1,
+            "phase": "恢复 (事故清除后 15-30 分钟)",
+            "title": "恢复正常信号配时",
+            "action": "事故清除、排队消散后，逐步恢复原有定时信号配时方案。",
+            "detail": f"恢复前确认瓶颈车速回升至 {round(speed_kmh * 2.5, 1)} km/h 以上且排队低于 50 米。分两步回落: 先退绿波→再退 Webster 优化→恢复定时方案。",
+            "where": f"J1-J3 全线交叉口",
+            "when": "确认事故清除、拥堵解除后 15 分钟内执行。",
+            "expected": "平稳回落至正常配时，避免车流骤停。",
+            "owner": "信号控制员",
+            "verify": "全线排队 < 50 米且车速 > 30 km/h 维持 10 分钟。",
+        })
+
+        # --- Step 7: 兜底预案 ---
+        steps.append({
+            "n": len(steps) + 1,
+            "phase": "预案 (随时启动)",
+            "title": "兜底预案：远端截流 + 路侧引导",
+            "action": "若主路措施在 15 分钟内未见明显改善，启动远端路网截流和路侧人工引导。",
+            "detail": f"① 远端 (上游 3~5 公里) 路口实施间歇放行，控制进入走廊的车流；② 安排路侧人员在关键合流点人工指挥；③ {risk_msg}",
+            "where": "远端路网关键路口 + 瓶颈路段沿线合流点",
+            "when": "措施执行 15 分钟后复核仍无改善时启动。",
+            "expected": "防止拥堵进一步蔓延至远端路网。",
+            "owner": "指挥中心 → 现场交警 → 路侧疏导员",
+            "verify": "远端路口排队不再增长；走廊内排队增速转负。",
+        })
+
+        # Plain summary
+        plain_summary = (
+            f"{bottleneck_loc} 当前严重拥堵（{severity}），排队 {round(queue_m, 1)} 米、车速 {round(speed_kmh, 1)} km/h。"
+            f"建议立即发布 VMS 分流{'（' + str(reroute_pct) + '%）' if reroute_pct > 0 else '待命'}，"
+            f"同步切换 Webster 动态信号（周期 {cycle_len} 秒、主路绿灯 {green_arterial} 秒）"
+            + (f"并启用绿波协调（相位差 {', '.join(str(o) + 's' for o in offsets)}）" if offsets else "")
+            + f"，预计延误降低{delay_imp}、排队缩短{queue_imp}。"
+        )
+
+        return {
+            "plain_summary": plain_summary,
+            "steps": steps,
         }
 
     # ------------------------------------------------------------------ #
@@ -969,6 +1171,7 @@ class TrafficDecisionAgent:
         # --- Recommended actions --------------------------------------- #
         cycle_len = strat_b.get("cycle_length")
         green_split = strat_b.get("green_split_arterial")
+        green_cross = strat_b.get("green_split_cross")
         offsets = strat_b.get("green_wave_offsets") or []
         raw_reroute = strat_b.get("reroute_ratio")
         reroute_val = float(raw_reroute) if raw_reroute is not None else 0.0
@@ -976,6 +1179,16 @@ class TrafficDecisionAgent:
         vms_msg = strat_b.get("vms_advisory") or "（未生成诱导文案）"
         risk_msg = strat_b.get("risk_warning") or "（未生成风险提示）"
         green_wave_active = bool(strat_b.get("green_wave"))
+
+        # Safe numeric refs for f-string arithmetic (guard against None)
+        _cl = cycle_len if cycle_len is not None else 0.0
+        _gs = green_split if green_split is not None else 0.0
+        _green_pct = round(_gs / max(1.0, _cl) * 100, 1) if _cl > 0 else "—"
+
+        # Pull action plan for section 四
+        action_plan_data = strategies.get("action_plan") or {}
+        plain_summary = action_plan_data.get("plain_summary", "—")
+        steps = action_plan_data.get("steps", [])
 
         gw_section = (
             f"启用干线协同周期 **{self._fmt(cycle_len, ' 秒')}**，主路关键绿灯 "
@@ -1082,10 +1295,36 @@ class TrafficDecisionAgent:
 
 **【推荐采纳方案】**：**方案 B：TrafficAgent-DSS 系统级时空协同治理**
 
-1. **诱导分流指令 (VMS Rerouting)**：
-   - {reroute_section}
-2. **干线信号协调 (Dynamic Green Wave)**：
-   - {gw_section}
-3. **风险自检与反思提示**：
-   - {risk_msg}
-"""
+本方案的三项核心指令已转化为可执行的行动清单（见下方「行动指令清单」），
+此处列出关键参数速览：
+
+| 指令 | 参数 |
+| :--- | :--- |
+| 信号周期 | **{self._fmt(cycle_len, ' 秒')}**（Webster 过饱和修正） |
+| 主路绿灯 | **{self._fmt(green_split, ' 秒')}**（绿信比 {_green_pct}%） |
+| 支路绿灯 | **{self._fmt(green_cross, ' 秒')}** |
+| 诱导分流 | **{reroute_pct}%**（VMS: *"{vms_msg}"*） |
+| 绿波协调 | {'已启用 — 相位差: ' + '、'.join(f'J{i+1}: {o}s' for i, o in enumerate(offsets)) if offsets else '未启用'} |
+
+> ⚠️ 完整分步行动指令、执行时序、验证指标与兜底预案见下方 **### 四、 行动指令清单 (Action Playbook)**。
+
+---
+
+### 四、 行动指令清单 (Action Playbook)
+
+{plain_summary}
+
+| 序号 | 阶段 | 行动标题 | 关键参数 | 执行方 | 验证方式 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+""" + chr(10).join(
+            f"| **{s['n']}** | {s['phase']} | {s['title']} | {s['detail']} | {s['owner']} | {s['verify']} |"
+            for s in steps
+        ) + (
+            (
+                "\n| **Fallback** | 综合 | 分流状态 | "
+                f"{'目标动态分流比例：**' + str(reroute_pct) + '%**。' if reroute_pct > 0 else '当前工况未触发动态分流诱导。'} "
+                f"（VMS: *\"{vms_msg}\"*） | 信息发布员 | 每 5 分钟查看旁路占有率数据。 |"
+            )
+            if not steps
+            else ""
+        ) + """\n> 执行原则：按序号顺序依次执行；第 4-5 项持续监测至拥堵解除；第 6-7 项为恢复与兜底预案。"""

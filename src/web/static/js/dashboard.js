@@ -319,6 +319,9 @@ function bindEventHandlers() {
 
   // Initialize LLM Switcher Modal
   initLlmModal();
+
+  // Initialize Map Toggle
+  initMapToggle();
 }
 
 // Initial Data Load
@@ -958,6 +961,450 @@ function showToast(message, type = 'success') {
     toast.style.transform = 'translateY(10px)';
     setTimeout(() => toast.remove(), 300);
   }, 3500);
+}
+
+// ==========================================================================
+// Section 6: Real Road-Network Digital Twin Map
+// ==========================================================================
+
+let mapViewState = 'baseline'; // 'baseline' | 'strategy'
+let currentNetworkData = null;
+let pinnedEdge = null;
+let mapScale = { min: 0, max: 0, dmin: 0, dmax: 0 };
+
+async function loadRoadNetwork() {
+  try {
+    const res = await fetch('/api/network');
+    if (!res.ok) {
+      console.warn('GET /api/network failed, road map will not render');
+      return null;
+    }
+    const data = await res.json();
+    currentNetworkData = data;
+    renderRoadNetwork();
+    return data;
+  } catch (err) {
+    console.warn('Network error loading road network:', err);
+    return null;
+  }
+}
+
+function renderRoadNetwork() {
+  const svg = document.getElementById('roadNetworkSvg');
+  if (!svg || !currentNetworkData) return;
+
+  const data = currentNetworkData;
+  const { bounds, edges, nodes, bottleneck_edge, bottleneck_name, live } = data;
+
+  // Use map_snapshot for strategy view if available
+  let renderEdges = edges;
+  let renderLive = live;
+  if (mapViewState === 'strategy' && data.map_snapshot) {
+    renderEdges = data.map_snapshot.edges || edges;
+    renderLive = data.map_snapshot.live || live;
+  }
+
+  // Compute bounds for SVG viewBox
+  const mnX = bounds?.min_x ?? 0, mxX = bounds?.max_x ?? 1;
+  const mnY = bounds?.min_y ?? 0, mxY = bounds?.max_y ?? 1;
+  const pad = 40;
+  const svgW = svg.clientWidth || 800;
+  const svgH = svg.clientHeight || 400;
+
+  const xRange = mxX - mnX || 1;
+  const yRange = mxY - mnY || 1;
+  const scaleX = (svgW - pad * 2) / xRange;
+  const scaleY = (svgH - pad * 2) / yRange;
+  const scale = Math.min(scaleX, scaleY);
+
+  const offX = (svgW - xRange * scale) / 2;
+  const offY = (svgH - yRange * scale) / 2;
+
+  const toSvgX = (x) => (x - mnX) * scale + offX;
+  const toSvgY = (y) => svgH - ((y - mnY) * scale + offY); // flip Y
+
+  // Level colors
+  const levelColor = (level) => {
+    if (!level || level === 'unknown') return '#64748b';
+    const map = { free: '#22c55e', moderate: '#eab308', congested: '#f97316', severe: '#dc2626' };
+    return map[level] || '#64748b';
+  };
+
+  // Line width by highway class
+  const lineWidth = (highway) => {
+    if (!highway) return 2;
+    const cls = String(highway).toLowerCase();
+    if (cls.includes('motorway') || cls.includes('trunk')) return 5;
+    if (cls.includes('primary')) return 4;
+    if (cls.includes('secondary')) return 3;
+    return 2;
+  };
+
+  // Build SVG content
+  let svgContent = '';
+
+  // Defs for pulse filter
+  svgContent += `<defs>
+    <filter id="bottleneckGlow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>`;
+
+  // Render nodes
+  if (nodes) {
+    nodes.forEach(n => {
+      const sx = toSvgX(n.x);
+      const sy = toSvgY(n.y);
+      const r = n.kind === 'junction' ? 5 : 3;
+      const fill = n.kind === 'junction' ? '#94a3b8' : '#64748b';
+      svgContent += `<circle class="road-node" cx="${sx}" cy="${sy}" r="${r}" fill="${fill}" opacity="0.7"/>
+`;
+    });
+  }
+
+  // Render edges
+  if (renderEdges) {
+    renderEdges.forEach(e => {
+      const geom = e.geometry;
+      if (!geom || geom.length < 2) return;
+
+      const coords = geom.map(p => `${toSvgX(p[0])},${toSvgY(p[1])}`).join(' ');
+      const isBottleneck = e.id === bottleneck_edge;
+      const level = renderLive?.[e.id]?.level || e.level;
+      const color = levelColor(level);
+      const width = lineWidth(e.highway);
+
+      let cls = 'road-edge';
+      let style = '';
+      if (isBottleneck) {
+        cls += ' bottleneck-edge';
+        style = 'filter:url(#bottleneckGlow);';
+      }
+
+      const d = `M ${coords}`;
+      svgContent += `<polyline class="${cls}" d="${d}" stroke="${color}" stroke-width="${width}" style="${style}" stroke-opacity="${isBottleneck ? 1 : 0.85}" data-edge-id="${e.id}" data-edge-name="${e.name || ''}" data-edge-speed="${renderLive?.[e.id]?.speed_kmh ?? e.speed_kmh ?? ''}" data-edge-queue="${renderLive?.[e.id]?.queue_m ?? ''}" data-edge-occupancy="${renderLive?.[e.id]?.occupancy ?? ''}" data-edge-flow="${renderLive?.[e.id]?.flow_vph ?? ''}" data-edge-level="${level}"/>
+`;
+
+      // Bottleneck label
+      if (isBottleneck) {
+        const midIdx = Math.floor(geom.length / 2);
+        const lx = toSvgX(geom[midIdx][0]);
+        const ly = toSvgY(geom[midIdx][1]);
+        svgContent += `<text x="${lx}" y="${ly - 10}" fill="#dc2626" font-size="12" font-weight="700" text-anchor="middle">瓶颈: <tspan fill="#fff">${bottleneck_name || ''}</tspan></text>`;
+      }
+    });
+  }
+
+  svg.innerHTML = svgContent;
+
+  // Attach event listeners
+  attachMapEdgeEvents(svg, renderLive, renderEdges, bottleneck_name);
+}
+
+function attachMapEdgeEvents(svg, liveData, edgeData, bottleneckName) {
+  const tooltip = document.getElementById('mapTooltip');
+  if (!tooltip) return;
+
+  const edges = svg.querySelectorAll('.road-edge');
+  edges.forEach(el => {
+    const edgeId = el.getAttribute('data-edge-id');
+    const edgeName = el.getAttribute('data-edge-name') || '未命名路段';
+    const speed = el.getAttribute('data-edge-speed');
+    const queue = el.getAttribute('data-edge-queue');
+    const occupancy = el.getAttribute('data-edge-occupancy');
+    const flow = el.getAttribute('data-edge-flow');
+    const level = el.getAttribute('data-edge-level') || 'unknown';
+
+    el.addEventListener('mouseenter', (e) => {
+      const levelLabel = { free: '畅通', moderate: '轻度拥堵', congested: '中度拥堵', severe: '严重拥堵', unknown: '未知' };
+      tooltip.innerHTML = `
+        <div class="tt-name">${edgeName}</div>
+        <div class="tt-row"><span class="tt-label">拥堵等级</span><span class="tt-val">${levelLabel[level] || level}</span></div>
+        ${speed ? `<div class="tt-row"><span class="tt-label">车速</span><span class="tt-val">${speed} km/h</span></div>` : ''}
+        ${queue ? `<div class="tt-row"><span class="tt-label">排队</span><span class="tt-val">${queue} m</span></div>` : ''}
+        ${occupancy ? `<div class="tt-row"><span class="tt-label">占有率</span><span class="tt-val">${Math.round(occupancy * 100)}%</span></div>` : ''}
+        ${flow ? `<div class="tt-row"><span class="tt-label">流量</span><span class="tt-val">${flow} veh/h</span></div>` : ''}
+      `;
+      tooltip.classList.add('visible');
+    });
+
+    el.addEventListener('mousemove', (e) => {
+      const rect = svg.parentElement.getBoundingClientRect();
+      let tx = e.clientX - rect.left + 16;
+      let ty = e.clientY - rect.top - 10;
+      // Keep tooltip in bounds
+      const tw = tooltip.offsetWidth;
+      if (tx + tw > rect.width) tx = tx - tw - 32;
+      tooltip.style.left = tx + 'px';
+      tooltip.style.top = ty + 'px';
+    });
+
+    el.addEventListener('mouseleave', () => {
+      tooltip.classList.remove('visible');
+    });
+
+    el.addEventListener('click', () => {
+      pinnedEdge = edgeId;
+      const sb = document.getElementById('mapSidebarContent');
+      if (sb) {
+        const levelLabel = { free: '畅通', moderate: '轻度拥堵', congested: '中度拥堵', severe: '严重拥堵', unknown: '未知' };
+        sb.innerHTML = `
+          <div style="margin-bottom:10px;"><span class="det-key">路段:</span> <span class="det-val">${edgeName}</span></div>
+          <div style="margin-bottom:6px;"><span class="det-key">拥堵等级:</span> <span class="det-val">${levelLabel[level] || level}</span></div>
+          ${speed ? `<div style="margin-bottom:6px;"><span class="det-key">车速:</span> <span class="det-val">${speed} km/h</span></div>` : ''}
+          ${queue ? `<div style="margin-bottom:6px;"><span class="det-key">排队长度:</span> <span class="det-val">${queue} m</span></div>` : ''}
+          ${occupancy ? `<div style="margin-bottom:6px;"><span class="det-key">占有率:</span> <span class="det-val">${Math.round(occupancy * 100)}%</span></div>` : ''}
+          ${flow ? `<div style="margin-bottom:6px;"><span class="det-key">流量:</span> <span class="det-val">${flow} veh/h</span></div>` : ''}
+        `;
+      }
+    });
+  });
+}
+
+// Map view toggle
+function initMapToggle() {
+  const btn = document.getElementById('mapToggleBtn');
+  const label = document.getElementById('mapToggleLabel');
+  if (!btn || !label) return;
+
+  btn.addEventListener('click', () => {
+    if (mapViewState === 'baseline') {
+      mapViewState = 'strategy';
+      label.textContent = '策略视图';
+      btn.classList.add('map-toggle-active');
+    } else {
+      mapViewState = 'baseline';
+      label.textContent = '基线视图';
+      btn.classList.remove('map-toggle-active');
+    }
+    renderRoadNetwork();
+  });
+}
+
+// ==========================================================================
+// Section 7: Action Checklist
+// ==========================================================================
+
+async function loadActionPlan() {
+  if (!state.diagnosis && !state.strategies && !state.rollout) return;
+
+  try {
+    const res = await fetch('/api/action-plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        diagnosis: state.diagnosis,
+        strategies: state.strategies,
+        rollout: state.rollout
+      })
+    });
+
+    if (!res.ok) {
+      console.warn('POST /api/action-plan failed');
+      return;
+    }
+
+    const data = await res.json();
+    renderActionChecklist(data);
+  } catch (err) {
+    console.warn('Error loading action plan:', err);
+  }
+}
+
+function renderActionChecklist(data) {
+  const summaryEl = document.getElementById('actionSummary');
+  const stepsEl = document.getElementById('actionSteps');
+  if (!summaryEl || !stepsEl) return;
+
+  // Render plain summary
+  if (data.plain_summary) {
+    summaryEl.innerHTML = `<strong>📌 行动概要：</strong>${data.plain_summary}`;
+    summaryEl.style.display = 'block';
+  } else {
+    summaryEl.style.display = 'none';
+  }
+
+  // Render steps
+  const steps = data.steps || [];
+  if (steps.length === 0) {
+    stepsEl.innerHTML = '<div class="detector-placeholder">暂无行动指令</div>';
+    return;
+  }
+
+  stepsEl.innerHTML = steps.map(s => {
+    const phase = s.phase ?? 0;
+    return `
+      <div class="action-step-card phase-${phase}">
+        <div class="action-step-header">
+          <span class="action-step-num">${s.n ?? (steps.indexOf(s) + 1)}</span>
+          <span class="action-step-title">${s.title || '未命名行动'}</span>
+        </div>
+        <div class="action-step-detail">
+          ${s.action ? `<div class="action-detail-item"><span class="action-detail-label">行动内容</span><span class="action-detail-value">${s.action}</span></div>` : ''}
+          ${s.where ? `<div class="action-detail-item"><span class="action-detail-label">📍 位置</span><span class="action-detail-value">${s.where}</span></div>` : ''}
+          ${s.when ? `<div class="action-detail-item"><span class="action-detail-label">⏰ 时机</span><span class="action-detail-value">${s.when}</span></div>` : ''}
+          ${s.expected ? `<div class="action-detail-item"><span class="action-detail-label">🎯 预期效果</span><span class="action-detail-value">${s.expected}</span></div>` : ''}
+          ${s.owner ? `<div class="action-detail-item"><span class="action-detail-label">👤 责任</span><span class="action-detail-value">${s.owner}</span></div>` : ''}
+          ${s.verified !== undefined ? `<div class="action-detail-item"><span class="action-detail-label">✅ 验证</span><span class="action-detail-value">${s.verified ? '已验证' : '待验证'}</span></div>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// ==========================================================================
+// Section 8: Per-Link Detector Table
+// ==========================================================================
+
+function renderDetectorTable(detectors, engine) {
+  const tbody = document.getElementById('detectorTableBody');
+  const engineLabel = document.getElementById('engineLabel');
+  if (!tbody) return;
+
+  // Engine label
+  if (engineLabel && engine) {
+    engineLabel.textContent = `引擎: ${engine}`;
+    engineLabel.style.display = 'inline-block';
+  } else if (engineLabel) {
+    engineLabel.style.display = 'none';
+  }
+
+  // Sort by severity (severe > congested > moderate > free > unknown)
+  if (!detectors || detectors.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="10" class="detector-placeholder">运行推演后显示检测器数据</td></tr>';
+    return;
+  }
+
+  // Slice top 15
+  const rows = detectors.slice(0, 15);
+
+  tbody.innerHTML = rows.map(d => {
+    const level = d.level || 'unknown';
+    const levelLabel = { free: '畅通', moderate: '轻度拥堵', congested: '中度拥堵', severe: '严重拥堵', unknown: '未知' };
+    return `
+      <tr>
+        <td><span class="detector-level-chip level-${level}"><span class="level-dot"></span>${levelLabel[level] || level}</span></td>
+        <td>${d.edge_id || '-'}</td>
+        <td>${d.name || '-'}</td>
+        <td>${d.highway || '-'}</td>
+        <td>${d.peak_queue_m != null ? d.peak_queue_m : '-'}</td>
+        <td>${d.avg_speed_kmh != null ? d.avg_speed_kmh : '-'}</td>
+        <td>${d.min_speed_kmh != null ? d.min_speed_kmh : '-'}</td>
+        <td>${d.peak_flow_vph != null ? d.peak_flow_vph : '-'}</td>
+        <td>${d.peak_occupancy != null ? Math.round(d.peak_occupancy * 100) + '%' : '-'}</td>
+        <td>${d.avg_delay_s != null ? d.avg_delay_s : '-'}</td>
+      </tr>
+    `;
+  }).join('');
+
+  // Attach sort handlers
+  attachDetectorSortHandlers();
+}
+
+function attachDetectorSortHandlers() {
+  const headers = document.querySelectorAll('#detectorTable thead th[data-sort]');
+  headers.forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.getAttribute('data-sort');
+      const tbody = document.getElementById('detectorTableBody');
+      if (!tbody) return;
+
+      // Toggle sort direction
+      const isAsc = !th.classList.contains('sorted-asc');
+      // Clear previous sort
+      headers.forEach(h => { h.classList.remove('sorted-asc', 'sorted-desc'); });
+      th.classList.add(isAsc ? 'sorted-asc' : 'sorted-desc');
+
+      // Get table data
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      if (rows.length === 0 || !rows[0].querySelector('.detector-placeholder') === false) {
+        // Sort the rows
+        rows.sort((a, b) => {
+          const aIdx = Array.from(a.children).findIndex(c => c === th.parentNode.querySelector(`th[data-sort="${key}"]`));
+          const bIdx = Array.from(b.children).findIndex(c => c === th.parentNode.querySelector(`th[data-sort="${key}"]`));
+          if (aIdx === -1 || bIdx === -1) return 0;
+          const aVal = a.children[aIdx]?.textContent?.trim?.();
+          const bVal = b.children[bIdx]?.textContent?.trim?.();
+          // Try numeric
+          const aNum = parseFloat(aVal);
+          const bNum = parseFloat(bVal);
+          if (!isNaN(aNum) && !isNaN(bNum)) {
+            return isAsc ? aNum - bNum : bNum - aNum;
+          }
+          return isAsc ? String(aVal).localeCompare(String(bVal), 'zh') : String(bVal).localeCompare(String(aVal), 'zh');
+        });
+        rows.forEach(r => tbody.appendChild(r));
+      }
+    });
+  });
+}
+
+// ==========================================================================
+// Extension: executeAgentDecisionPipeline with new fields
+// ==========================================================================
+
+// Patch executeAgentDecisionPipeline to also handle new rollout fields
+// We save the original and wrap it
+const _originalExecutePipeline = executeAgentDecisionPipeline;
+
+function executeAgentDecisionPipeline() {
+  return _originalExecutePipeline().then(() => {
+    // After pipeline completes, render new sections
+    const rolloutData = state.rollout;
+    if (rolloutData) {
+      // Render detector table from rollout
+      const detectors = rolloutData.detectors;
+      const engine = rolloutData.engine;
+      if (detectors || engine) {
+        renderDetectorTable(detectors, engine);
+      }
+
+      // Render action checklist
+      loadActionPlan();
+
+      // If rollout includes network data, update map
+      if (rolloutData.network) {
+        currentNetworkData = rolloutData.network;
+        renderRoadNetwork();
+      }
+
+      // If rollout includes map_snapshot, update map view
+      if (rolloutData.map_snapshot) {
+        if (!currentNetworkData) currentNetworkData = {};
+        currentNetworkData.map_snapshot = rolloutData.map_snapshot;
+        if (mapViewState === 'strategy') {
+          renderRoadNetwork();
+        }
+      }
+    }
+  });
+}
+
+// ==========================================================================
+// Extension: loadInitialData also loads road network
+// ==========================================================================
+
+const _originalLoadInitialData = loadInitialData;
+
+async function loadInitialData() {
+  await _originalLoadInitialData();
+  // Load road network on startup
+  const net = await loadRoadNetwork();
+  // After baseline loaded, render action checklist
+  loadActionPlan();
+}
+
+// ==========================================================================
+// Extension: onScenarioChanged also reloads road network
+// ==========================================================================
+
+const _originalOnScenarioChanged = onScenarioChanged;
+
+function onScenarioChanged() {
+  _originalOnScenarioChanged();
+  // Reload road network after scenario change
+  loadRoadNetwork();
 }
 
 // ==========================================================================

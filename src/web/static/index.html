@@ -399,6 +399,94 @@
         </div>
       </section>
 
+      <!-- Section 6: Real Road-Network Digital Twin Map -->
+      <section>
+        <div class="section-header">
+          <h2 class="section-title">
+            <span>🗺️</span> 6. 真实路网 · 数字孪生地图 (Real Road-Network Map)
+          </h2>
+          <div class="report-header-actions">
+            <button class="btn-secondary" id="mapToggleBtn" title="切换基线 / 策略视图">
+              <span>🔄</span> <span id="mapToggleLabel">基线视图</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="map-panel">
+          <div class="map-wrapper">
+            <svg id="roadNetworkSvg" xmlns="http://www.w3.org/2000/svg"></svg>
+            <div class="map-tooltip" id="mapTooltip"></div>
+          </div>
+          <div class="map-sidebar" id="mapSidebar">
+            <div class="map-sidebar-title">路段详情</div>
+            <div class="map-sidebar-content" id="mapSidebarContent">
+              <span class="map-placeholder">点击路段查看详细数据</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Legend -->
+        <div class="map-legend">
+          <div class="map-legend-title">拥堵等级图例</div>
+          <div class="map-legend-items">
+            <span class="legend-item"><span class="legend-chip legend-free"></span> 畅通 (free)</span>
+            <span class="legend-item"><span class="legend-chip legend-moderate"></span> 轻度拥堵 (moderate)</span>
+            <span class="legend-item"><span class="legend-chip legend-congested"></span> 中度拥堵 (congested)</span>
+            <span class="legend-item"><span class="legend-chip legend-severe"></span> 严重拥堵 (severe)</span>
+            <span class="legend-item"><span class="legend-chip legend-unknown"></span> 未知 (unknown)</span>
+            <span class="legend-item"><span class="legend-chip legend-bottleneck"></span> 瓶颈路段</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 7: Action Checklist -->
+      <section>
+        <div class="section-header">
+          <h2 class="section-title">
+            <span>📋</span> 7. 行动指令清单 (Action Checklist)
+          </h2>
+        </div>
+
+        <div class="action-checklist-panel">
+          <div class="action-summary" id="actionSummary"></div>
+          <div class="action-steps" id="actionSteps"></div>
+        </div>
+      </section>
+
+      <!-- Section 8: Per-Link Detector Table -->
+      <section>
+        <div class="section-header">
+          <h2 class="section-title">
+            <span>📡</span> 8. 路网检测器数据 (Per-Link Detector Data)
+          </h2>
+          <div id="engineLabel" class="engine-label" style="display:none;"></div>
+        </div>
+
+        <div class="detector-panel">
+          <div class="detector-table-wrapper">
+            <table class="detector-table" id="detectorTable">
+              <thead>
+                <tr>
+                  <th data-sort="level">拥堵等级 <span class="sort-icon">⇅</span></th>
+                  <th data-sort="edge_id">路段编号 <span class="sort-icon">⇅</span></th>
+                  <th data-sort="name">名称 <span class="sort-icon">⇅</span></th>
+                  <th data-sort="highway">道路类型 <span class="sort-icon">⇅</span></th>
+                  <th data-sort="peak_queue_m">峰值排队(m) <span class="sort-icon">⇅</span></th>
+                  <th data-sort="avg_speed_kmh">平均车速(km/h) <span class="sort-icon">⇅</span></th>
+                  <th data-sort="min_speed_kmh">最低车速(km/h) <span class="sort-icon">⇅</span></th>
+                  <th data-sort="peak_flow_vph">峰值流量(veh/h) <span class="sort-icon">⇅</span></th>
+                  <th data-sort="peak_occupancy">峰值占有率 <span class="sort-icon">⇅</span></th>
+                  <th data-sort="avg_delay_s">平均延误(s) <span class="sort-icon">⇅</span></th>
+                </tr>
+              </thead>
+              <tbody id="detectorTableBody">
+                <tr><td colspan="10" class="detector-placeholder">运行推演后显示检测器数据</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
     </main>
 
   </div>

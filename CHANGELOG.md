@@ -9,6 +9,33 @@
 
 ---
 
+## [2026-09-13] 系统核心能力跃迁：合并真实路网拓扑、中观物理推演引擎、一线实操行动清单与数字孪生大屏
+
+**改进范围**：全面审阅并合并不受限环境下的外部高质量改进包（`TrafficAgent-DSS-fixed-2026-09-12.zip`），彻底解决用户提出的“无真实路网空间图、方案话语缺乏实操性、无仿真即假装的虚假数据、前端AI味太重”4大核心痛点。
+**影响文件**：
+- **新增模块**：`scenarios/network_xizhimen.json`、`scripts/build_network_from_osm.py`、`scripts/fetch_osm_network.sh`、`src/data/__init__.py`、`src/data/network.py`、`src/simulation/mesoscopic.py`、`src/web/network_api.py`、`tests/test_network_mesoscopic.py`、`docs/review_findings.md`、`docs/action_playbook_design.md`
+- **更新模块**：`src/agents/traffic_agent.py`、`src/web/app.py`、`src/web/static/index.html`、`src/web/static/css/style.css`、`src/web/static/js/dashboard.js`、`tests/test_web_api.py`、`tests/test_empirical_challenger_2.py`、`README.md`
+**兼容性**：完全向后兼容。100% 保留了我方前序开发的 ccSwitch 模型动态探测热切换（`/api/llm/*`）、HEAD 健康检查路由与严格 CI 防护逻辑；全量 107 项单元测试全部通过（0 failure, 0 error）。
+
+---
+
+### 一、改进动因与攻克的 4 大痛点
+1. **解决痛点 1（真实路网与直观可视化）**：
+   - 此前仅有手写 3 路口走廊（J1-J3），缺乏现实大都市路网的说服力；
+   - 现正式引入北京**西直门综合立体交通枢纽真实 OSM 路网拓扑**（591 节点、771 路段、143.2 km、92 交叉口），提供真实路名与几何坐标；
+   - 前端增加响应式 SVG 矢量数字孪生地图，支持实时拥堵色阶热力渲染、瓶颈脉冲高亮与路段悬停/点击交互。
+2. **解决痛点 2（一线实操行动清单 Action Playbook）**：
+   - 改变以往“空域分流/激波回传”等纯学术散文式描述，由智能体 `formulate_action_plan()` 生成标准 7 步一线作战清单；
+   - 明确责任人（现场交警/信号控制员/VMS发布员/指挥中心值班长）、时机、控制参数、验证指标与兜底预案，并正式编入决策报告第四章节。
+3. **解决痛点 3（消除虚假数据，填补“无 SUMO 即假装仿真”的诚实性缺口）**：
+   - 此前在本地无 SUMO 环境下推演直接回退至硬编码常量，缺乏实证科学性；
+   - 新增确定性中观交通推演引擎（HCM/Webster 延误 + Little's Law 动态排队），无本地 SUMO 依赖即可在秒级内计算全网逐路段、逐时间步仿真数据；
+   - `/api/rollout` 构建三级推演阶梯（SUMO 微观沙盒 $\rightarrow$ 真实路网中观引擎 $\rightarrow$ 标定基准兜底），并严格如实声明数据来源，恪守“大模型绝不编造性能指标”铁律。
+4. **解决痛点 4（前端信息架构解耦与重构）**：
+   - 前端大屏重构为“专业交通智能体数字孪生大屏”，划分真实路网地图、行动指令清单、路网检测器全量明细表三大核心区块，为后续套入 UI 视觉资源奠定完备的数据与组件基础。
+
+---
+
 ## [2026-09-13] 修复绿波相位差公式回归 + 全链路可信度与审计补强
 
 **修复范围**：修复 `8bfe498` 引入的方案 B 性能回归（最高优先），并一次性治理 8 项

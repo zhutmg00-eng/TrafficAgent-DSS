@@ -1216,3 +1216,407 @@ input:checked + .switch-slider:before {
   color: #3b82f6;
 }
 
+/* ==========================================================================
+   Section 6: Road-Network Digital Twin Map
+   ========================================================================== */
+
+.map-panel {
+  display: grid;
+  grid-template-columns: 1fr 260px;
+  gap: 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  box-shadow: var(--shadow-sm);
+  min-height: 420px;
+}
+
+@media (max-width: 992px) {
+  .map-panel {
+    grid-template-columns: 1fr;
+  }
+  .map-sidebar {
+    order: -1;
+  }
+}
+
+.map-wrapper {
+  position: relative;
+  background: var(--bg-card-inner);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+  min-height: 400px;
+}
+
+#roadNetworkSvg {
+  width: 100%;
+  height: 400px;
+  display: block;
+}
+
+#roadNetworkSvg .road-edge {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+#roadNetworkSvg .road-edge:hover {
+  opacity: 0.85;
+  stroke-width: 5;
+}
+
+#roadNetworkSvg .road-edge.bottleneck-edge {
+  stroke-dasharray: 8, 4;
+  animation: bottleneckPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes bottleneckPulse {
+  0%, 100% { stroke-width: 4; opacity: 1; }
+  50% { stroke-width: 7; opacity: 0.7; }
+}
+
+#roadNetworkSvg .road-node {
+  cursor: pointer;
+  transition: r 0.15s;
+}
+
+#roadNetworkSvg .road-node:hover {
+  r: 6;
+}
+
+.map-tooltip {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--text-primary);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  box-shadow: var(--shadow-md);
+  z-index: 10;
+  max-width: 240px;
+}
+
+.map-tooltip.visible {
+  opacity: 1;
+}
+
+.map-tooltip .tt-name { font-weight: 700; font-size: 13px; margin-bottom: 4px; }
+.map-tooltip .tt-row { display: flex; justify-content: space-between; gap: 12px; }
+.map-tooltip .tt-label { color: var(--text-muted); }
+.map-tooltip .tt-val { font-weight: 600; }
+
+.map-sidebar {
+  background: var(--bg-card-inner);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 14px;
+}
+
+.map-sidebar-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.map-sidebar-content {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+.map-sidebar-content .det-key {
+  color: var(--text-muted);
+}
+
+.map-sidebar-content .det-val {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.map-placeholder {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.map-legend {
+  margin-top: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.map-legend-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  margin-right: 8px;
+}
+
+.map-legend-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.legend-chip {
+  display: inline-block;
+  width: 18px;
+  height: 4px;
+  border-radius: 2px;
+}
+
+.legend-free { background: #22c55e; }
+.legend-moderate { background: #eab308; }
+.legend-congested { background: #f97316; }
+.legend-severe { background: #dc2626; }
+.legend-unknown { background: #64748b; }
+.legend-bottleneck { background: #dc2626; border: 1px dashed #dc2626; height: 6px; }
+
+/* ==========================================================================
+   Section 7: Action Checklist
+   ========================================================================== */
+
+.action-checklist-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+}
+
+.action-summary {
+  background: var(--accent-blue-glow);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--text-primary);
+  margin-bottom: 18px;
+}
+
+.action-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.action-step-card {
+  background: var(--bg-card-inner);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  border-left: 4px solid var(--accent-blue);
+  transition: border-color 0.15s;
+}
+
+.action-step-card:hover {
+  border-left-color: var(--accent-cyan);
+}
+
+.action-step-card.phase-0 {
+  border-left-color: var(--accent-red);
+}
+
+.action-step-card.phase-1 {
+  border-left-color: var(--accent-amber);
+}
+
+.action-step-card.phase-2 {
+  border-left-color: var(--accent-green);
+}
+
+.action-step-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.action-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.action-step-card.phase-0 .action-step-num { background: var(--accent-red); }
+.action-step-card.phase-1 .action-step-num { background: var(--accent-amber); }
+.action-step-card.phase-2 .action-step-num { background: var(--accent-green); }
+
+.action-step-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.action-step-detail {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.action-detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.action-detail-label {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.action-detail-value {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* ==========================================================================
+   Section 8: Per-Link Detector Table
+   ========================================================================== */
+
+.detector-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  box-shadow: var(--shadow-sm);
+}
+
+.engine-label {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 12px;
+  background: var(--accent-purple-glow, rgba(139, 92, 246, 0.15));
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  color: var(--accent-purple, #8b5cf6);
+}
+
+.detector-table-wrapper {
+  overflow-x: auto;
+}
+
+.detector-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.detector-table thead th {
+  background: var(--bg-card-inner);
+  border-bottom: 2px solid var(--border-color);
+  padding: 10px 12px;
+  text-align: left;
+  color: var(--text-primary);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+
+.detector-table thead th:hover {
+  background: var(--bg-card-hover);
+}
+
+.detector-table thead th .sort-icon {
+  font-size: 10px;
+  opacity: 0.5;
+  margin-left: 4px;
+}
+
+.detector-table thead th.sorted-asc .sort-icon,
+.detector-table thead th.sorted-desc .sort-icon {
+  opacity: 1;
+}
+
+.detector-table tbody td {
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 9px 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.detector-table tbody tr:hover td {
+  background: var(--bg-card-hover);
+}
+
+.detector-table tbody tr:hover td {
+  background: var(--bg-card-hover);
+}
+
+.detector-placeholder {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 40px 20px;
+  font-style: italic;
+}
+
+.detector-level-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.detector-level-chip .level-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.level-free .level-dot { background: #22c55e; }
+.level-free { background: rgba(34, 197, 94, 0.12); color: #22c55e; }
+.level-moderate .level-dot { background: #eab308; }
+.level-moderate { background: rgba(234, 179, 8, 0.12); color: #eab308; }
+.level-congested .level-dot { background: #f97316; }
+.level-congested { background: rgba(249, 115, 22, 0.12); color: #f97316; }
+.level-severe .level-dot { background: #dc2626; }
+.level-severe { background: rgba(220, 38, 38, 0.12); color: #dc2626; }
+.level-unknown .level-dot { background: #64748b; }
+.level-unknown { background: rgba(100, 116, 139, 0.12); color: #64748b; }
+
+/* Map view mode toggle active state */
+.map-toggle-active {
+  background: var(--accent-blue-glow) !important;
+  border-color: var(--accent-blue) !important;
+}
+

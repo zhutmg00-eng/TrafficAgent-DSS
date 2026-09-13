@@ -54,3 +54,5 @@ docs/competition_guide.md
 # Teamwork subagent runtime workspaces
 .agents/
 ORIGINAL_REQUEST.md
+.temp_inspection/
+*.zip

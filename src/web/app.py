@@ -51,7 +51,12 @@ app.add_middleware(
 agent = TrafficDecisionAgent()
 
 # Static directories
+from src.web import network_api
+
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+# Real road-network APIs: topology/live map, detectors, action plan.
+app.include_router(network_api.router)
 if not STATIC_DIR.exists():
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
 INDEX_HTML_PATH = STATIC_DIR / "index.html"
@@ -610,7 +615,48 @@ async def execute_rollout(config: Optional[RolloutConfigInput] = None):
                 "radar": radar_data
             }
         except Exception as e:
-            # Graceful fallback to calibrated data with notice
+            # SUMO unavailable -> run the real-network mesoscopic engine (rich per-link data).
+            # Only if that also fails do we fall back to the hard-coded calibrated constants.
+            try:
+                result = network_api.run_mesoscopic_rollout(
+                    duration=cfg.duration,
+                    incident_start=cfg.incident_start,
+                    incident_end=cfg.incident_end,
+                    use_rerouting=cfg.use_rerouting,
+                    use_green_wave=cfg.use_green_wave,
+                    use_webster=cfg.use_webster,
+                    seed=cfg.seed,
+                )
+                result["fallback_reason"] = f"SUMO 不可用，已切换到真实路网中观推演引擎: {e}"
+                return result
+            except Exception as e2:
+                calibrated = get_calibrated_rollout_data(
+                    duration=cfg.duration,
+                    incident_start=cfg.incident_start,
+                    incident_end=cfg.incident_end,
+                    use_rerouting=cfg.use_rerouting,
+                    use_green_wave=cfg.use_green_wave,
+                    use_webster=cfg.use_webster,
+                    seed=cfg.seed
+                )
+                calibrated["execution_mode"] = "calibrated_empirical_fallback"
+                calibrated["fallback_reason"] = f"SUMO notice: {e}; mesoscopic notice: {e2}"
+                calibrated["success"] = True
+                return calibrated
+    else:
+        # Real-network mesoscopic mode: produces per-link detector data and map frames.
+        # Falls back to calibrated benchmark constants only if the data layer is missing.
+        try:
+            return network_api.run_mesoscopic_rollout(
+                duration=cfg.duration,
+                incident_start=cfg.incident_start,
+                incident_end=cfg.incident_end,
+                use_rerouting=cfg.use_rerouting,
+                use_green_wave=cfg.use_green_wave,
+                use_webster=cfg.use_webster,
+                seed=cfg.seed,
+            )
+        except Exception as e:
             calibrated = get_calibrated_rollout_data(
                 duration=cfg.duration,
                 incident_start=cfg.incident_start,
@@ -620,24 +666,10 @@ async def execute_rollout(config: Optional[RolloutConfigInput] = None):
                 use_webster=cfg.use_webster,
                 seed=cfg.seed
             )
-            calibrated["execution_mode"] = "calibrated_empirical_fallback"
-            calibrated["fallback_reason"] = f"SUMO Sandbox notice: {str(e)}"
+            calibrated["execution_mode"] = "calibrated_empirical_fast"
+            calibrated["fallback_reason"] = f"mesoscopic network unavailable: {e}"
             calibrated["success"] = True
             return calibrated
-    else:
-        # High-precision calibrated interactive mode
-        calibrated = get_calibrated_rollout_data(
-            duration=cfg.duration,
-            incident_start=cfg.incident_start,
-            incident_end=cfg.incident_end,
-            use_rerouting=cfg.use_rerouting,
-            use_green_wave=cfg.use_green_wave,
-            use_webster=cfg.use_webster,
-            seed=cfg.seed
-        )
-        calibrated["execution_mode"] = "calibrated_empirical_fast"
-        calibrated["success"] = True
-        return calibrated
 
 
 @app.post("/api/evaluate/multi-seed", summary="多随机种子蒙特卡洛/批次推演评估")
