@@ -3,8 +3,35 @@ TrafficAgent-DSS: Dynamic Arterial Green Wave Coordinator
 Computes optimal signal progression offsets and progression bandwidth along arterial corridors.
 """
 
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 import math
+
+
+def _circular_bandwidth(windows: List[Tuple[float, float]], cycle: float) -> float:
+    """
+    Length (seconds) of the largest time window contained in every circular green
+    window `(start_mod_cycle, length)` on a signal cycle of `cycle` seconds.
+
+    This is the exact interval-intersection step of the classic time-space-diagram
+    (graphical) progression method: an empty common region yields zero bandwidth,
+    and a region wrapping across the cycle boundary is measured correctly.
+    """
+    if cycle <= 0 or not windows:
+        return 0.0
+    best = 0.0
+    for anchor_start, _ in windows:
+        common = None
+        feasible = True
+        for start, length in windows:
+            into = (anchor_start - start) % cycle
+            if into >= length:
+                feasible = False
+                break
+            remain = length - into
+            common = remain if common is None else min(common, remain)
+        if feasible and common is not None:
+            best = max(best, common)
+    return best
 
 
 class GreenWaveCoordinator:
@@ -31,7 +58,7 @@ class GreenWaveCoordinator:
         progression_speed: float = None,      # Target speed in m/s
         bidirectional: bool = True,
         weight_forward: float = 0.6,          # Directional weight for peak direction
-    ) -> Dict[str, any]:
+    ) -> Dict[str, Any]:
         """
         Computes progression offsets for a series of N intersections (J0, J1, ..., J_{N-1}).
         Offset of J0 is 0.
@@ -85,32 +112,54 @@ class GreenWaveCoordinator:
                 next_offset = (offsets[-1] + tt) % safe_cycle
                 offsets.append(round(next_offset, 1))
 
-        # 4. Compute theoretical progression bandwidth
-        # Bandwidth is limited by the smallest green split minus dispersion
+        # 4. Progression bandwidth via the time-space-diagram (graphical) method.
+        #
+        # Intersection k serves arterial green for g_k seconds starting at offset_k in the
+        # common signal cycle. A platoon departing J0 at time t reaches Jk after the
+        # cumulative travel time tau_k, so it passes Jk on green iff
+        #     (t + tau_k) mod C ∈ [offset_k, offset_k + g_k],
+        # i.e. the admissible departure window contributed by Jk is
+        #     W_k = [(offset_k - tau_k) mod C, length g_k].
+        # The forward bandwidth is the exact circular intersection of all W_k; the reverse
+        # band uses travel times measured from the far end (rho_k = tau_total - tau_k).
+        # Unlike a "min green minus a fixed dispersion allowance" heuristic, an empty
+        # intersection yields zero bandwidth — the number reported is the geometry itself.
         if cycle_length <= 0:
             bandwidth_forward = 0.0
             bandwidth_reverse = 0.0
-            bandwidth_ratio = 0.0
-            bidirectional_bandwidth_ratio = 0.0
         else:
-            min_green = min(green_splits_arterial)
-            bandwidth_forward = max(0.0, min_green - 4.0)  # accounting for platoon dispersion
-            bandwidth_ratio = round((bandwidth_forward / cycle_length) * 100.0, 1)
+            tau = []
+            acc = 0.0
+            for k in range(num_nodes):
+                tau.append(acc)
+                if k < len(travel_times):
+                    acc += travel_times[k]
+            rho = [tau[-1] - t for t in tau]
 
-            # Reverse direction theoretical bandwidth under progression tuning
-            if (bidirectional or weight_forward == 0.0) and weight_forward < 1.0:
-                reverse_share = 1.0 - weight_forward
-                if weight_forward <= 0.0:
-                    bandwidth_reverse = round(bandwidth_forward, 1)
-                else:
-                    bandwidth_reverse = max(0.0, round(bandwidth_forward * min(1.0, reverse_share / max(1e-6, weight_forward)), 1))
-            else:
-                bandwidth_reverse = 0.0
+            def _band(shifting: List[float]) -> float:
+                windows = [
+                    ((offsets[k] - shifting[k]) % safe_cycle, max(0.0, float(green_splits_arterial[k])))
+                    for k in range(num_nodes)
+                ]
+                return _circular_bandwidth(windows, safe_cycle)
 
-            bidirectional_bandwidth_ratio = round(
-                (weight_forward * bandwidth_forward + (1.0 - weight_forward) * bandwidth_reverse) / cycle_length * 100.0,
-                1,
-            )
+            bandwidth_forward = _band(tau)
+            bandwidth_reverse = _band(rho)
+
+        bandwidth_ratio = round((bandwidth_forward / safe_cycle) * 100.0, 1)
+        reverse_ratio = round((bandwidth_reverse / safe_cycle) * 100.0, 1)
+        # Two-way progression is summarised as the mean of the two directional
+        # bandwidth ratios (equal-weight, standard two-way reporting).
+        bidirectional_bandwidth_ratio = round((bandwidth_ratio + reverse_ratio) / 2.0, 1)
+
+        if bandwidth_forward > 0.0 and bandwidth_reverse > 0.0:
+            coordination_quality = "both_directions_progression"
+        elif bandwidth_forward > 0.0:
+            coordination_quality = "forward_progression_only"
+        elif bandwidth_reverse > 0.0:
+            coordination_quality = "reverse_progression_only"
+        else:
+            coordination_quality = "no_common_band"
 
         return {
             "cycle_length": cycle_length,
@@ -119,7 +168,8 @@ class GreenWaveCoordinator:
             "travel_times": [round(tt, 1) for tt in travel_times],
             "bandwidth_seconds": round(bandwidth_forward, 1),
             "bandwidth_ratio_percent": bandwidth_ratio,
-            "bandwidth_reverse_seconds": bandwidth_reverse,
+            "bandwidth_reverse_seconds": round(bandwidth_reverse, 1),
+            "bandwidth_reverse_ratio_percent": reverse_ratio,
             "bidirectional_bandwidth_ratio_percent": bidirectional_bandwidth_ratio,
-            "coordination_quality": "Excellent" if bandwidth_ratio >= 35.0 else ("Good" if bandwidth_ratio >= 20.0 else "Fair")
+            "coordination_quality": coordination_quality
         }

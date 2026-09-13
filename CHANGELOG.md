@@ -9,6 +9,52 @@
 
 ---
 
+## [2026-09-13] v2.2.0：P0 诚信整改 + 百度地图 LBS 真实路网底座 + 双轨地图架构 + 浅色主题可读性
+
+**主题**：融合 `feat/integrity-baidu-lbs` 分支，对标“评委/队友与赛事技术审查”视角完成全方位诚信与学术防伪整改（P0），接入百度地图开放平台 LBS 核心能力（百度地图 JS API GL 实时路况底座、DirectionLite 驾车路径规划代理、百度千帆 ERNIE 端点，面向 2026 百度地图开发者创作大赛），同时实现与北京西直门 591 节点/771 路段 OSM SVG 矢量数字孪生地图的**双轨地图并存**。系统版本号跃迁为 `v2.2.0`。
+
+**影响文件**：`src/agents/traffic_agent.py`、`src/tools/green_wave.py`、`src/simulation/sumo_sandbox.py`、`src/web/app.py`、`src/web/static/`（index.html / dashboard.js / baidu_map.js / style.css）、`tests/test_system.py`、`tests/test_web_api.py`、`experiments/`（新增 ablation.py 与基准数据）、`README.md`、`CHANGELOG.md`、`.env.example`、`.gitignore`
+
+**兼容性**：
+1. **三级推演阶梯与行为变化**：`/api/rollout` 与 `/api/evaluate/multi-seed` 中 `run_physical_sandbox` 默认值设为 `true`（优先执行高保真微观 SUMO 推演）；当物理环境缺失或异常时，平滑降级至真实路网中观排队物理仿真引擎（`src/simulation/mesoscopic.py`），若中观数据层缺失则进一步降级至标定经验数据，全程标注 `degraded: true` 与 `fallback_reason`，前端显式横幅警示，绝不静默伪装。
+2. **多随机种子统计契约**：`/api/evaluate/multi-seed` 在非物理模式下彻底废除 $\pm 2\%$ 加噪伪统计，输出 `sample_size: null`、`statistically_significant: null` 与 `statistical_notice: "单一确定性数据集，不支持统计推断"`；置信区间与显著性检验严格保留在物理模式中输出。
+3. **绿波算法口径变化**：废除伪公式 `min_green - 4.0`，采用时距图公共交集图解法几何精确求解。
+4. **全量功能无缝保留**：完全保留西直门真实路网 SVG 矢量地图、7 步实操行动清单（Action Playbook）、逐路段检测器明细表（`/api/detectors`）以及 ccSwitch 风格大模型热切换与自动识别（`/api/llm/*`）。全量测试通过率 100%（113/113 项）。
+
+---
+
+### 一、P0 诚信与学术防伪整改
+1. **默认路径跑真仿真**：`run_physical_sandbox` 默认 `True`，推动评委与操作员默认获得客观可复现的微观物理仿真输出。
+2. **非物理加噪伪统计彻底清零**：删除 multi-seed 非物理模式下基于 `rng.uniform(-0.02, 0.02)` 制造虚假方差的代码；确定性标定数据仅输出点估计并附显式学术诚信免责说明。
+3. **LLM 数字溯源守卫 (`_narrative_numbers_traceable`)**：智能体在格式化预案叙事与指标解读时，对 LLM 输出中的所有数值对照交通工程工具产出白名单进行严格正则提取与闭环审查，一旦检出未经工具计算的幻觉指标立即拒绝并诚实回退至确定性模板。
+4. **决策简报删除无验证归因**：删除原决策简报中缺乏物理推演支撑的“巡航车队匀速巡航消除急加速”等硬编码解释，替换为客观的工程权衡与实测复核指引。
+5. **指标空态展示规范**：`index.html` 移除所有展示期硬编码的虚假百分比数值，推演前一律以 `—` 及“等待推演”呈现。
+
+### 二、时距图图解法真实绿波带宽
+- 废除原代码中无文献支撑的 `min_green - 4.0` 伪算法；
+- 采用信号周期时距图公共绿灯交集圆周几何法（`_circular_bandwidth`）：将各交叉口绿灯窗口沿正反向设计车速与路段距离投影至车队出发时基，求取公共交集宽度，无重叠时精确归零；
+- 评价等级改为客观协调状态枚举（`both_directions_progression` / `forward_progression_only` / `no_common_band` 等）。
+
+### 三、百度地图 LBS 能力接入（地图开发者创作大赛核心功能）
+- **JS API GL 实时路况底座**：前端大屏新增 1B 区块，无缝嵌入百度地图 WebGL 地图画布，叠加 `TrafficLayer` 实时路况路网图层与关键走廊枢纽标注；
+- **驾车路径规划代理 (`/api/baidu/route`)**：后端建立 DirectionLite 接口代理与 120 秒 OD 坐标级缓存，实时获取替代绕行路径之真实距离、耗时及拥堵路段占比；
+- **百度千帆大模型预设**：模型热切换弹窗新增“百度千帆”快捷标签（`https://qianfan.baidubce.com/v2`），支持一键接入 ERNIE 系列模型；
+- **双轨地图架构**：与西直门 591 节点离线 OSM SVG 矢量数字孪生地图（Section 6）并存互补，既满足 ITSAC 2026 答辩环境 100% 离线自主可控，又满足百度地图开发者大赛核心评选规范。
+
+### 四、大屏浅色“政企”主题与可读性重塑
+- **默认浅色主题**：针对用户反馈“黑底大屏累眼”问题，调整首屏默认渲染浅色“政企”主题；`<head>` 嵌入早期探测脚本彻底消除刷新闪烁；
+- **字体排版优化**：正文字号由 14px 调整至 15px，行高增至 1.65，板块标题提至 19px，KPI 核心数值提升至 28px；
+- **ECharts 关键大小写 Bug 修复**：排查并修复 `dashboard.js` 中 `yaxis: { ... }` 小写拼写错误为标准 `yAxis: { ... }`，使 Y 轴指标单位、色阶与网格线恢复正常渲染。
+
+### 五、跨平台探测与组件消融实验套件
+- **跨平台 SUMO 探测**：在 `sumo_sandbox.py` 中引入 `sysconfig` 获取纯净 Python 环境 site-packages 路径，全面兼容 Windows、macOS 与 Linux 下的 SUMO 预编译轮子；
+- **消融实验套件 (`experiments/ablation.py`)**：提供自动化组件消融测试工具，实测并记录了不同随机种子下仅启用 Webster、仅启用绿波、仅启用分流以及完整 TrafficAgent-DSS 时空协同的边际贡献对比，生成 `ablation_result_*.md` 证据文档。
+
+### 六、验证
+- 运行 `py -3.10 -m unittest discover -s tests -p "test_*.py" -v`，全量 **113 项测试 100% 通过（0 failures, 0 errors）**。
+
+---
+
 ## [2026-09-13] 系统核心能力跃迁：合并真实路网拓扑、中观物理推演引擎、一线实操行动清单与数字孪生大屏
 
 **改进范围**：全面审阅并合并不受限环境下的外部高质量改进包（`TrafficAgent-DSS-fixed-2026-09-12.zip`），彻底解决用户提出的“无真实路网空间图、方案话语缺乏实操性、无仿真即假装的虚假数据、前端AI味太重”4大核心痛点。

@@ -7,6 +7,13 @@
   <meta name="description" content="2026年第十六届北京市大学生交通科技大赛 · ITSAC 2026 创新挑战赛（赛题2）高品质决策支持系统">
   <!-- Stylesheet -->
   <link rel="stylesheet" href="/static/css/style.css">
+  <!-- 在 CSS 渲染前确定主题，避免刷新时闪现错误底色（默认浅色「政企」主题） -->
+  <script>
+    document.documentElement.setAttribute(
+      'data-theme',
+      localStorage.getItem('traffic_dss_theme') || 'light'
+    );
+  </script>
   <!-- ECharts 5 Library: Local Vendor First with CDN Fallback -->
   <script src="/static/js/vendor/echarts.min.js"></script>
   <script>
@@ -131,7 +138,7 @@
           <div class="toggle-item">
             <span class="toggle-text">微观 SUMO 进程推演</span>
             <label class="toggle-switch">
-              <input type="checkbox" id="toggleSandbox">
+              <input type="checkbox" id="toggleSandbox" checked>
               <span class="switch-slider"></span>
             </label>
           </div>
@@ -148,6 +155,9 @@
 
     <!-- Main Content Flow -->
     <main class="main-content">
+
+      <!-- Degraded Fallback Notice Banner -->
+      <div id="degradedNoticeBanner" class="degraded-banner" style="display:none;"></div>
 
       <!-- Real-time Emergency Warning Banner -->
       <div class="alert-card">
@@ -167,7 +177,7 @@
           <h2 class="section-title">
             <span>📍</span> 1. 走廊实时交通态势感知看板 (Situational Awareness)
           </h2>
-          <span style="font-size:12px;color:var(--text-muted);">车道级线圈与卡口多源融合感知</span>
+          <span style="font-size:13px;color:var(--text-muted);">车道级线圈与卡口多源融合感知</span>
         </div>
 
         <div class="kpi-grid">
@@ -194,6 +204,29 @@
             <div class="kpi-value" id="kpiBypass">1,200 veh/h (28%)</div>
             <div class="kpi-delta positive" id="kpiBypassDelta">● 备用容量充沛，适宜分流</div>
           </div>
+        </div>
+      </section>
+
+      <!-- Section 1B: Baidu Map Real-Network Digital Twin (LBS) -->
+      <section>
+        <div class="section-header">
+          <h2 class="section-title">
+            <span>🗺️</span> 1B. 真实路网数字孪生底座 (百度地图 JS API GL × LBS)
+          </h2>
+          <span style="font-size:13px;color:var(--text-muted);font-weight:600;" id="baiduMapStatusBadge">LBS: 检测中…</span>
+        </div>
+
+        <div class="map-panel">
+          <div id="baiduMapContainer" class="map-canvas"></div>
+          <div class="map-toolbar">
+            <label class="map-toggle">
+              <input type="checkbox" id="baiduTrafficToggle" checked>
+              <span>实时路况图层 (TrafficLayer)</span>
+            </label>
+            <button class="map-route-btn" id="baiduRouteCompareBtn">🚗 真实绕行路线对比</button>
+            <span class="map-note" id="baiduRouteNote">路径规划数据来自百度地图 API 实时返回，未经人工修饰</span>
+          </div>
+          <div class="map-route-cards" id="baiduRouteCards"></div>
         </div>
       </section>
 
@@ -316,39 +349,44 @@
           <h2 class="section-title">
             <span>📊</span> 4. 数字孪生沙盒推演与多方案量化评估 (What-If Simulation Analytics)
           </h2>
-          <span style="font-size:12px;color:var(--accent-green);font-weight:600;">综合评级：卓越 (Level A+)</span>
+          <span style="font-size:13px;color:var(--text-muted);font-weight:600;" id="rolloutOverallRating">综合评级：待推演评估</span>
         </div>
 
-        <!-- Metric Delta Row -->
+        <!-- Data provenance banner: shown only when the payload is calibrated empirical
+             data instead of a live SUMO measurement (see renderExecutionModeNotice) -->
+        <div id="executionModeBanner" role="alert"></div>
+
+        <!-- Metric Delta Row (placeholders only: real values are rendered by dashboard.js
+             from the actual rollout response — never pre-filled with showcase numbers) -->
         <div class="rollout-kpi-bar">
           <div class="rollout-kpi-pill">
             <div class="rollout-kpi-label">平均延误削减</div>
-            <div class="rollout-kpi-imp" id="rolloutDelayImp">-44.6%</div>
-            <div class="rollout-kpi-actual" id="rolloutDelayAct">降至 46.8 s/veh</div>
+            <div class="rollout-kpi-imp" id="rolloutDelayImp">—</div>
+            <div class="rollout-kpi-actual" id="rolloutDelayAct">等待推演</div>
           </div>
 
           <div class="rollout-kpi-pill">
             <div class="rollout-kpi-label">最大排队削减</div>
-            <div class="rollout-kpi-imp" id="rolloutQueueImp">-56.6%</div>
-            <div class="rollout-kpi-actual" id="rolloutQueueAct">缩减至 105.0 m</div>
+            <div class="rollout-kpi-imp" id="rolloutQueueImp">—</div>
+            <div class="rollout-kpi-actual" id="rolloutQueueAct">等待推演</div>
           </div>
 
           <div class="rollout-kpi-pill">
             <div class="rollout-kpi-label">瓶颈车速提升</div>
-            <div class="rollout-kpi-imp" id="rolloutSpeedImp">+138.3%</div>
-            <div class="rollout-kpi-actual" id="rolloutSpeedAct">提升至 22.4 km/h</div>
+            <div class="rollout-kpi-imp" id="rolloutSpeedImp">—</div>
+            <div class="rollout-kpi-actual" id="rolloutSpeedAct">等待推演</div>
           </div>
 
           <div class="rollout-kpi-pill">
             <div class="rollout-kpi-label">路网吞吐提升</div>
-            <div class="rollout-kpi-imp" id="rolloutTpImp">+32.8%</div>
-            <div class="rollout-kpi-actual" id="rolloutTpAct">达 1,780 veh/h</div>
+            <div class="rollout-kpi-imp" id="rolloutTpImp">—</div>
+            <div class="rollout-kpi-actual" id="rolloutTpAct">等待推演</div>
           </div>
 
           <div class="rollout-kpi-pill">
             <div class="rollout-kpi-label">碳排放减排比例</div>
-            <div class="rollout-kpi-imp" id="rolloutCo2Imp">-26.2%</div>
-            <div class="rollout-kpi-actual" id="rolloutCo2Act">降至 134.6 kg</div>
+            <div class="rollout-kpi-imp" id="rolloutCo2Imp">—</div>
+            <div class="rollout-kpi-actual" id="rolloutCo2Act">等待推演</div>
           </div>
         </div>
 
@@ -412,7 +450,7 @@
           </div>
         </div>
 
-        <div class="map-panel">
+        <div class="map-panel map-grid-panel">
           <div class="map-wrapper">
             <svg id="roadNetworkSvg" xmlns="http://www.w3.org/2000/svg"></svg>
             <div class="map-tooltip" id="mapTooltip"></div>
@@ -510,6 +548,7 @@
           <input type="text" class="form-input" id="llmBaseUrlInput" placeholder="https://api.deepseek.com/v1">
           <div class="quick-providers">
             <span class="provider-tag" data-url="https://api.deepseek.com/v1">DeepSeek 官方</span>
+            <span class="provider-tag" data-url="https://qianfan.baidubce.com/v2">百度千帆</span>
             <span class="provider-tag" data-url="https://api.siliconflow.cn/v1">硅基流动</span>
             <span class="provider-tag" data-url="https://api.openai.com/v1">OpenAI 官方</span>
             <span class="provider-tag" data-url="http://localhost:11434/v1">Ollama 本地</span>
@@ -554,5 +593,6 @@
 
   <!-- JavaScript Controller -->
   <script src="/static/js/dashboard.js"></script>
+  <script src="/static/js/baidu_map.js"></script>
 </body>
 </html>

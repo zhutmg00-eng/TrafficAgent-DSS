@@ -36,7 +36,7 @@ class TestWebAPI(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["status"], "online")
-        self.assertEqual(data["version"], "2.1.0")
+        self.assertEqual(data["version"], "2.2.0")
         self.assertIn("Decoupled", data["architecture"])
         self.assertIn("agent_brain", data)
         self.assertEqual(data["agent_brain"]["state"], "ready")
@@ -227,7 +227,7 @@ class TestWebAPI(unittest.TestCase):
         self.assertEqual(data.get("seed"), 2026)
 
     def test_evaluate_multi_seed_endpoint_fast(self):
-        """Tests POST /api/evaluate/multi-seed fast calibrated evaluation."""
+        """Tests POST /api/evaluate/multi-seed fast calibrated evaluation (no statistical inference)."""
         payload = {
             "seeds": [42, 101, 2024],
             "duration": 600,
@@ -239,16 +239,39 @@ class TestWebAPI(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertTrue(data["success"])
-        self.assertEqual(data["sample_size"], 3)
         self.assertEqual(data["seeds_tested"], [42, 101, 2024])
         self.assertIn("summary_by_scheme", data)
         self.assertIn("strategy_b_improvements", data)
-        # Verify SEM and 95% CI presence
-        delay_stat = data["strategy_b_improvements"]["delay_improvement_pct"]
-        self.assertIn("sem", delay_stat)
-        self.assertIn("ci_95", delay_stat)
-        self.assertEqual(len(delay_stat["ci_95"]), 2)
-        self.assertTrue(data["statistically_significant"])
+        # Calibrated data is a single deterministic dataset: there are no independent
+        # per-seed samples, so the endpoint must NOT fabricate SEM/CI or a significance
+        # verdict. Statistical inference is reserved for the physical sandbox mode.
+        self.assertIsNone(data["sample_size"])
+        self.assertIsNone(data["statistically_significant"])
+        self.assertNotIn("sem", data["strategy_b_improvements"]["delay_improvement_pct"])
+        self.assertNotIn("ci_95", data["strategy_b_improvements"]["delay_improvement_pct"])
+        self.assertIn("statistical_notice", data)
+
+    def test_evaluate_multi_seed_physical_mode_reports_statistics(self):
+        """Tests that physical multi-seed mode passes through real statistical inference."""
+        from unittest.mock import patch
+        physical_result = {
+            "success": True,
+            "execution_mode": "physical_sumo_sandbox",
+            "sample_size": 2,
+            "strategy_b_improvements": {
+                "delay_improvement_pct": {"mean": 15.2, "sem": 1.1, "ci_95": [4.2, 26.2]},
+            },
+            "statistically_significant": True,
+        }
+        with patch("src.web.app.agent.run_multi_seed_evaluation", return_value=physical_result):
+            payload = {"seeds": [10, 20], "run_physical_sandbox": True}
+            response = self.client.post("/api/evaluate/multi-seed", json=payload)
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertTrue(data["success"])
+            self.assertEqual(data["execution_mode"], "physical_sumo_sandbox")
+            self.assertTrue(data["statistically_significant"])
+            self.assertIn("ci_95", data["strategy_b_improvements"]["delay_improvement_pct"])
 
     def test_evaluate_multi_seed_validation_errors(self):
         """Tests that invalid multi-seed inputs are rejected with 422."""
@@ -275,7 +298,45 @@ class TestWebAPI(unittest.TestCase):
             self.assertEqual(data["execution_mode"], "calibrated_fallback_no_sumo")
             self.assertIn("fallback_reason", data)
             self.assertIn("SUMO binary missing", data["fallback_reason"])
-            self.assertEqual(data["sample_size"], 2)
+            self.assertIsNone(data["sample_size"])
+
+    def test_baidu_config_endpoint_honest_unconfigured(self):
+        """Tests GET /api/baidu/config reports an absent AK honestly instead of faking it."""
+        res = self.client.get("/api/baidu/config")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(data["success"])
+        # CI environment never provides BAIDU_MAP_AK, so the default contract is honest.
+        self.assertIn("configured", data)
+        self.assertIn("center", data)
+        if data["configured"]:
+            self.assertTrue(data["ak"])
+        else:
+            self.assertEqual(data["ak"], "")
+            self.assertIn("未配置", data["note"])
+
+    def test_baidu_route_endpoint_requires_ak(self):
+        """Tests POST /api/baidu/route returns 503 (not fake data) when AK is missing."""
+        res = self.client.post("/api/baidu/route", json={
+            "origin_lng": 116.33, "origin_lat": 39.96,
+            "dest_lng": 116.35, "dest_lat": 39.97,
+        })
+        if res.status_code == 503:
+            self.assertIn("BAIDU_MAP_AK", res.json()["detail"])
+        else:
+            # If an AK exists in the environment the proxy must still answer honestly.
+            self.assertEqual(res.status_code, 200)
+            data = res.json()
+            self.assertTrue(data["success"])
+            self.assertIsInstance(data["routes"], list)
+
+    def test_baidu_route_endpoint_validation(self):
+        """Tests that out-of-range coordinates are rejected with 422."""
+        res = self.client.post("/api/baidu/route", json={
+            "origin_lng": 20.0, "origin_lat": 39.96,  # 20.0 outside China lng bounds
+            "dest_lng": 116.35, "dest_lat": 39.97,
+        })
+        self.assertEqual(res.status_code, 422)
 
     def test_strategies_endpoint_invalid_payload_returns_422(self):
         """Tests that invalid diagnosis payload to /api/strategies returns HTTP 422."""

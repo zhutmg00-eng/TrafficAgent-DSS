@@ -33,7 +33,7 @@ from src.agents.llm_client import LLMReasoningClient
 app = FastAPI(
     title="TrafficAgent-DSS 城市交通拥堵治理决策支持系统 API",
     description="2026年第十六届北京市大学生交通科技大赛 · ITSAC 2026 创新挑战赛（赛题2）现代化解耦架构决策服务",
-    version="2.1.0",
+    version="2.2.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -85,7 +85,7 @@ class RolloutConfigInput(BaseModel):
     use_rerouting: bool = Field(default=True, description="是否启用动态诱导分流")
     use_green_wave: bool = Field(default=True, description="是否启用干线绿波协调")
     use_webster: bool = Field(default=True, description="是否启用 Webster 信号配时优化")
-    run_physical_sandbox: bool = Field(default=False, description="是否强制执行本地微观 SUMO 进程推演")
+    run_physical_sandbox: bool = Field(default=True, description="是否执行本地微观 SUMO 进程推演（默认开启；关闭时仅返回标定经验数据且不提供统计推断）")
     seed: Optional[int] = Field(default=None, ge=0, description="随机种子 (用于可复现仿真)")
 
     @model_validator(mode="after")
@@ -102,7 +102,7 @@ class MultiSeedEvaluationInput(BaseModel):
     duration: int = Field(default=600, ge=30, le=1800, description="单次推演时长 (秒)")
     incident_start: int = Field(default=150, ge=0, le=1200, description="事故开始时间 (秒)")
     incident_end: int = Field(default=420, ge=0, le=1800, description="事故撤离时间 (秒)")
-    run_physical_sandbox: bool = Field(default=False, description="是否调用本地微观 SUMO 进行全量仿真推演")
+    run_physical_sandbox: bool = Field(default=True, description="是否调用本地微观 SUMO 进行全量仿真推演（默认开启；置信区间与显著性检验仅在物理模式下提供）")
 
     @model_validator(mode="after")
     def validate_batch_window(self):
@@ -350,7 +350,7 @@ async def get_system_status():
     return {
         "status": "online",
         "system_name": "TrafficAgent-DSS 城市交通拥堵治理决策支持系统",
-        "version": "2.1.0",
+        "version": "2.2.0",
         "architecture": "Decoupled Modern RESTful API + Responsive Dashboard",
         "agent_brain": {
             "state": "ready",
@@ -371,7 +371,8 @@ async def get_system_status():
         },
         "competition_tracks": [
             "2026年第十六届北京市大学生交通科技大赛",
-            "ITSAC 2026 创新挑战赛（赛题2：基于交通仿真智能体的城市交通拥堵治理决策支持）"
+            "ITSAC 2026 创新挑战赛（赛题2：基于交通仿真智能体的城市交通拥堵治理决策支持）",
+            "百度地图开发者创作大赛 (2026-09)"
         ],
         "default_state": {
             "bottleneck_edge": "J1_J2 (主干线合流段)",
@@ -431,6 +432,165 @@ async def update_llm_config(payload: LLMConfigInput):
         "success": True,
         "llm": desc,
         "message": f"模型配置已实时更新为: {desc.get('model')}",
+    }
+
+
+# ---------------------------------------------------------------------------
+# 百度地图 LBS 能力接入（地图开发者创作大赛核心功能底座）
+# AK 通过 .env 的 BAIDU_MAP_AK 配置；浏览器端 AK 靠百度控制台的 Referer 白名单保护。
+# ---------------------------------------------------------------------------
+BAIDU_MAP_AK = os.environ.get("BAIDU_MAP_AK", "").strip()
+BAIDU_MAP_CENTER_LNG = float(os.environ.get("BAIDU_MAP_CENTER_LNG", "116.337") or 116.337)
+BAIDU_MAP_CENTER_LAT = float(os.environ.get("BAIDU_MAP_CENTER_LAT", "39.965") or 39.965)
+_BAIDU_DIRECTION_URL = "https://api.map.baidu.com/direction/v2/driving"
+_BAIDU_ROUTE_CACHE: Dict[str, Dict[str, Any]] = {}
+_BAIDU_ROUTE_CACHE_TTL_S = 120.0
+
+
+class BaiduRouteInput(BaseModel):
+    """驾车路径规划请求（百度 BD-09 坐标）。"""
+
+    origin_lng: float = Field(..., ge=73.0, le=136.0, description="起点经度 (BD-09)")
+    origin_lat: float = Field(..., ge=15.0, le=55.0, description="起点纬度 (BD-09)")
+    dest_lng: float = Field(..., ge=73.0, le=136.0, description="终点经度 (BD-09)")
+    dest_lat: float = Field(..., ge=15.0, le=55.0, description="终点纬度 (BD-09)")
+
+
+@app.get("/api/baidu/config", summary="百度地图前端接入配置 (AK 与地图中心)")
+async def get_baidu_config():
+    """
+    Returns the browser-side Baidu Map AK and default map center.
+    An absent AK is reported honestly so the dashboard can show a real
+    'not configured' state instead of a fabricated map.
+    """
+    return {
+        "success": True,
+        "configured": bool(BAIDU_MAP_AK),
+        "ak": BAIDU_MAP_AK,
+        "center": {"lng": BAIDU_MAP_CENTER_LNG, "lat": BAIDU_MAP_CENTER_LAT},
+        "gl_api": "https://api.map.baidu.com/api?v=1.0&type=webgl&ak=",
+        "note": (
+            "浏览器端 AK 属公开凭据，请务必在百度地图开放平台控制台为该 AK 配置 "
+            "Referer 白名单（如 http://127.0.0.1:8000/*），防止盗用。"
+        ) if BAIDU_MAP_AK else "未配置 BAIDU_MAP_AK：真实路网视图与路径规划不可用，界面将显式标注未配置状态。",
+    }
+
+
+@app.post("/api/baidu/route", summary="百度驾车路径规划代理 (真实绕行对比)")
+async def baidu_driving_route(payload: BaiduRouteInput):
+    """
+    Server-side proxy for the Baidu Map driving-direction REST API.
+    Returns the real planned distance/duration so the dashboard can compare the
+    congested corridor against real alternative routes. Responses are cached briefly
+    (per OD pair) to respect the daily quota; failures are reported as failures —
+    no synthetic route data is ever produced.
+    """
+    if not BAIDU_MAP_AK:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="未配置 BAIDU_MAP_AK：无法调用百度路径规划。请在 .env 中配置后重启服务。",
+        )
+
+    cache_key = f"{payload.origin_lng:.5f},{payload.origin_lat:.5f}->{payload.dest_lng:.5f},{payload.dest_lat:.5f}"
+    import time as _time
+
+    cached = _BAIDU_ROUTE_CACHE.get(cache_key)
+    now = _time.time()
+    if cached and now - cached.get("_ts", 0) < _BAIDU_ROUTE_CACHE_TTL_S:
+        return {**cached, "cached": True}
+
+    import httpx
+
+    params = {
+        "origin": f"{payload.origin_lat:.6f},{payload.origin_lng:.6f}",
+        "destination": f"{payload.dest_lat:.6f},{payload.dest_lng:.6f}",
+        "ak": BAIDU_MAP_AK,
+        "alternatives": 1,  # 返回备选路线，供绕行对比
+        "extensions_info": 1,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(_BAIDU_DIRECTION_URL, params=params)
+            resp.raise_for_status()
+            body = resp.json()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"百度路径规划调用失败: {str(e)}",
+        )
+
+    if body.get("status") != 0:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"百度路径规划返回错误 status={body.get('status')}: {body.get('message', '未知错误')}",
+        )
+
+    result = body.get("result") or {}
+    routes = []
+    for idx, r in enumerate(result.get("routes") or []):
+        routes.append({
+            "index": idx,
+            "distance_km": round(r.get("distance", 0) / 1000.0, 2),
+            "duration_min": round(r.get("duration", 0) / 60.0, 1),
+            "congestion_summary": _baidu_congestion_summary(r),
+            "path_lnglat": _route_path_lnglat(r, max_points=240),
+        })
+
+    payload_out = {
+        "success": True,
+        "origin": {"lng": payload.origin_lng, "lat": payload.origin_lat},
+        "destination": {"lng": payload.dest_lng, "lat": payload.dest_lat},
+        "routes": routes,
+        "cached": False,
+        "note": "数据来源：百度地图驾车路径规划 API 实时返回，未经任何人工修饰。",
+    }
+    _BAIDU_ROUTE_CACHE[cache_key] = {**payload_out, "_ts": now}
+    return payload_out
+
+
+def _route_path_lnglat(route: Dict[str, Any], max_points: int = 240) -> list:
+    """
+    Flatten a Baidu route's per-step `path` strings into a decimated [[lng, lat], ...]
+    polyline for map drawing. Coordinates stay in Baidu BD-09 as returned by the API.
+    """
+    pts: list = []
+    for s in route.get("steps") or []:
+        raw = s.get("path") or ""
+        for pair in raw.split(";"):
+            if not pair:
+                continue
+            parts = pair.split(",")
+            try:
+                lng, lat = float(parts[0]), float(parts[1])
+            except (ValueError, IndexError, TypeError):
+                continue
+            pts.append([round(lng, 6), round(lat, 6)])
+    if len(pts) > max_points:
+        step = len(pts) / float(max_points)
+        pts = [pts[int(i * step)] for i in range(max_points - 1)] + [pts[-1]]
+    return pts
+
+
+def _baidu_congestion_summary(route: Dict[str, Any]) -> Dict[str, Any]:
+    """Aggregate per-step congestion annotation from the Baidu route if present."""
+    steps = route.get("steps") or []
+    congested_m = 0
+    total_m = 0
+    for s in steps:
+        dist = float(s.get("distance", 0) or 0)
+        total_m += dist
+        # congestion: 0畅通 1缓行 2拥堵 3严重拥堵 (百度路况枚举)
+        if int(s.get("congestion", 0) or 0) >= 2:
+            congested_m += dist
+    ratio = round(congested_m / total_m, 3) if total_m > 0 else None
+    return {
+        "total_distance_m": total_m,
+        "congested_distance_m": congested_m,
+        "congested_ratio": ratio,
+        "label": (
+            "严重拥堵路段" if (ratio or 0) >= 0.5
+            else ("拥堵路段" if (ratio or 0) >= 0.25 else "通行状况尚可")
+        ) if ratio is not None else None,
     }
 
 
@@ -627,7 +787,8 @@ async def execute_rollout(config: Optional[RolloutConfigInput] = None):
                     use_webster=cfg.use_webster,
                     seed=cfg.seed,
                 )
-                result["fallback_reason"] = f"SUMO 不可用，已切换到真实路网中观推演引擎: {e}"
+                result["fallback_reason"] = f"SUMO 不可用，已平滑降级至真实路网中观排队推演引擎: {e}"
+                result["degraded"] = True
                 return result
             except Exception as e2:
                 calibrated = get_calibrated_rollout_data(
@@ -640,14 +801,14 @@ async def execute_rollout(config: Optional[RolloutConfigInput] = None):
                     seed=cfg.seed
                 )
                 calibrated["execution_mode"] = "calibrated_empirical_fallback"
-                calibrated["fallback_reason"] = f"SUMO notice: {e}; mesoscopic notice: {e2}"
+                calibrated["fallback_reason"] = f"SUMO 与中观引擎均不可用，回退至标定数据: {e} / {e2}"
+                calibrated["degraded"] = True
                 calibrated["success"] = True
                 return calibrated
     else:
-        # Real-network mesoscopic mode: produces per-link detector data and map frames.
-        # Falls back to calibrated benchmark constants only if the data layer is missing.
+        # User explicitly requested non-physical fast simulation
         try:
-            return network_api.run_mesoscopic_rollout(
+            result = network_api.run_mesoscopic_rollout(
                 duration=cfg.duration,
                 incident_start=cfg.incident_start,
                 incident_end=cfg.incident_end,
@@ -656,6 +817,9 @@ async def execute_rollout(config: Optional[RolloutConfigInput] = None):
                 use_webster=cfg.use_webster,
                 seed=cfg.seed,
             )
+            result["degraded"] = True
+            result["fallback_reason"] = "已选非微观仿真模式，运行真实路网中观排队物理推演引擎。"
+            return result
         except Exception as e:
             calibrated = get_calibrated_rollout_data(
                 duration=cfg.duration,
@@ -668,6 +832,7 @@ async def execute_rollout(config: Optional[RolloutConfigInput] = None):
             )
             calibrated["execution_mode"] = "calibrated_empirical_fast"
             calibrated["fallback_reason"] = f"mesoscopic network unavailable: {e}"
+            calibrated["degraded"] = True
             calibrated["success"] = True
             return calibrated
 
@@ -721,7 +886,10 @@ async def evaluate_multi_seed(payload: Optional[MultiSeedEvaluationInput] = None
                 # Graceful fallback when SUMO binaries or physical sandbox encounter errors
                 fallback_notice = f"SUMO Sandbox notice: {str(e)}"
 
-        # Calibrated fast multi-seed evaluation with deterministic slight variance per seed
+        # Calibrated mode: the empirical dataset is a single deterministic scenario, so it
+        # cannot support statistical inference. Only point estimates are returned; SEM,
+        # confidence intervals and significance testing require the physical sandbox
+        # (run_physical_sandbox=true) where each seed is an independent SUMO run.
         schemes = ["baseline", "strategy_a", "strategy_b"]
         base_data = get_calibrated_rollout_data(
             duration=inp.duration,
@@ -730,83 +898,38 @@ async def evaluate_multi_seed(payload: Optional[MultiSeedEvaluationInput] = None
         )
         base_kpis = base_data["kpis"]
 
-        seed_runs = []
-        for s in seeds:
-            rng = np.random.RandomState(s)
-            noise_base = 1.0 + rng.uniform(-0.02, 0.02)
-            noise_strat = 1.0 + rng.uniform(-0.02, 0.02)
-
-            s_kpis = {}
-            for sc in schemes:
-                orig = base_kpis[sc]
-                factor = noise_base if sc == "baseline" else noise_strat
-                s_kpis[sc] = {
-                    "avg_delay_s": round(orig["avg_delay_s"] * factor, 1),
-                    "max_queue_m": round(orig["max_queue_m"] * factor, 1),
-                    "avg_speed_kmh": round(orig["avg_speed_kmh"] * (2.0 - factor), 1),
-                    "throughput_vph": round(orig["throughput_vph"] * (2.0 - factor), 1),
-                    "delay_variance": round(orig["delay_variance"] * factor, 1),
-                    "co2_emissions_kg": round(orig["co2_emissions_kg"] * factor, 1),
-                    "fuel_liters": round(orig.get("fuel_liters", 45.0) * factor, 1),
-                }
-            comp_b = PerformanceEvaluator.compare_schemes(s_kpis["baseline"], s_kpis["strategy_b"])
-            seed_runs.append({"seed": s, "kpis": s_kpis, "comparisons": {"strategy_b": comp_b}})
-
         metric_keys = [
             "avg_delay_s", "max_queue_m", "avg_speed_kmh",
             "throughput_vph", "delay_variance", "co2_emissions_kg", "fuel_liters"
         ]
-        summary = {}
-        for sc in schemes:
-            summary[sc] = {}
-            for m in metric_keys:
-                vals = [r["kpis"][sc][m] for r in seed_runs]
-                mean_v = float(np.mean(vals))
-                std_v = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
-                summary[sc][m] = {
-                    "mean": round(mean_v, 2),
-                    "std": round(std_v, 2),
-                    "min": round(float(np.min(vals)), 2),
-                    "max": round(float(np.max(vals)), 2),
-                }
+        summary = {
+            sc: {
+                m: {"mean": round(float(base_kpis[sc][m]), 2)}
+                for m in metric_keys if m in base_kpis[sc]
+            }
+            for sc in schemes
+        }
 
         comp_keys = [
             "delay_improvement_pct", "queue_improvement_pct",
             "speed_improvement_pct", "throughput_improvement_pct",
             "variance_improvement_pct", "co2_improvement_pct", "fuel_improvement_pct"
         ]
-        b_improvements = {}
-        for ck in comp_keys:
-            vals = [r["comparisons"]["strategy_b"][ck] for r in seed_runs]
-            mean_v = float(np.mean(vals))
-            std_v = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
-            sem_v = float(std_v / np.sqrt(len(vals))) if len(vals) > 1 else 0.0
-            ci_low = round(mean_v - 1.96 * sem_v, 2)
-            ci_high = round(mean_v + 1.96 * sem_v, 2)
-            b_improvements[ck] = {
-                "mean": round(mean_v, 2),
-                "std": round(std_v, 2),
-                "sem": round(sem_v, 2),
-                "ci_95": [ci_low, ci_high],
-            }
-
-        delay_stat = b_improvements.get("delay_improvement_pct", {})
-        delay_mean = delay_stat.get("mean", 0.0)
-        delay_ci = delay_stat.get("ci_95", [0.0, 0.0])
-        statistically_significant = (
-            len(seed_runs) >= 2
-            and delay_mean > 0.0
-            and delay_ci[0] > 0.0
-        )
+        comp_b = PerformanceEvaluator.compare_schemes(base_kpis["baseline"], base_kpis["strategy_b"])
+        b_improvements = {ck: {"mean": round(float(comp_b[ck]), 2)} for ck in comp_keys}
 
         response_payload = {
             "success": True,
             "execution_mode": "calibrated_fallback_no_sumo" if fallback_notice else "calibrated_empirical_fast",
             "seeds_tested": seeds,
-            "sample_size": len(seeds),
+            "sample_size": None,
             "summary_by_scheme": summary,
             "strategy_b_improvements": b_improvements,
-            "statistically_significant": statistically_significant,
+            "statistically_significant": None,
+            "statistical_notice": (
+                "标定经验数据为单一确定性数据集，不支持统计推断：未输出标准误、置信区间与显著性结论。"
+                "如需统计评估，请设置 run_physical_sandbox=true 运行物理 SUMO 多种子蒙特卡洛推演。"
+            ),
         }
         if fallback_notice:
             response_payload["fallback_reason"] = fallback_notice

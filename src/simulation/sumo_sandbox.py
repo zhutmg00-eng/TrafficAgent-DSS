@@ -27,16 +27,41 @@ def _stable_bucket(text: str) -> int:
 
 # Ensure SUMO tools are importable
 def setup_sumo_env():
-    py_dir = Path(sys.executable).parent
-    sumo_data_bin = py_dir / "Lib" / "site-packages" / "sumo_data" / "bin"
-    scripts_dir = py_dir / "Scripts"
-    sumo_data_home = py_dir / "Lib" / "site-packages" / "sumo_data"
+    """
+    Locate SUMO binaries shipped with the pip wheels and expose them to PATH/SUMO_HOME.
 
-    paths_to_add = []
+    Covers both wheel layouts:
+      - Windows:  <venv>/Lib/site-packages/sumo_data/bin  (+ Scripts/)
+      - POSIX venv (macOS/Linux): <site-packages>/sumo/bin and .../sumo_data/bin,
+        where <site-packages> is resolved via sysconfig so any interpreter layout
+        (venv, conda, system) works.
+    """
+    paths_to_add: list = []
+    sumo_homes: list = []
+
+    # Windows-style layout relative to the interpreter directory
+    py_dir = Path(sys.executable).parent
+    win_sp = py_dir / "Lib" / "site-packages"
+    sumo_data_bin = win_sp / "sumo_data" / "bin"
     if sumo_data_bin.exists():
         paths_to_add.append(str(sumo_data_bin))
+        sumo_homes.append(str(win_sp / "sumo_data"))
+    scripts_dir = py_dir / "Scripts"
     if scripts_dir.exists():
         paths_to_add.append(str(scripts_dir))
+
+    # POSIX-style layout via sysconfig site-packages (venv / conda / system)
+    try:
+        import sysconfig
+        purelib = Path(sysconfig.get_paths()["purelib"])
+    except Exception:
+        purelib = None
+    if purelib is not None:
+        for wheel in ("sumo", "sumo_data"):
+            wheel_bin = purelib / wheel / "bin"
+            if wheel_bin.exists():
+                paths_to_add.append(str(wheel_bin))
+                sumo_homes.append(str(purelib / wheel))
 
     current_path = os.environ.get("PATH", "")
     for p in paths_to_add:
@@ -44,8 +69,8 @@ def setup_sumo_env():
             current_path = p + os.pathsep + current_path
     os.environ["PATH"] = current_path
 
-    if sumo_data_home.exists() and not os.environ.get("SUMO_HOME"):
-        os.environ["SUMO_HOME"] = str(sumo_data_home)
+    if sumo_homes and not os.environ.get("SUMO_HOME"):
+        os.environ["SUMO_HOME"] = sumo_homes[0]
 
 
 setup_sumo_env()

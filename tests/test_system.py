@@ -391,9 +391,38 @@ class TestTrafficAgentDSS(unittest.TestCase):
         self.assertNotIn("降低 -", report)
         self.assertIn("下降 9.5%", report)
         self.assertIn("降低 19.2%", report)
-        # Explanatory note for the speed tradeoff must be included
+        # Explanatory note for the speed tradeoff must be included, and it must stay
+        # factual: no unverified causal mechanism (e.g. the removed "巡航车队" story).
         self.assertIn("速度指标说明", report)
-        self.assertIn("巡航车队", report)
+        self.assertNotIn("巡航车队", report)
+        self.assertIn("未经推演验证的归因解释", report)
+
+    def test_llm_narrative_numeric_provenance_guard(self):
+        """LLM narrative may quote tool figures but must never invent performance claims."""
+        state = {
+            "bottleneck_edge": "J1_J2",
+            "queue_m": 165.0,
+            "link_length_m": 300.0,
+            "speed_kmh": 8.2,
+            "occupancy": 0.82,
+            "bypass_occupancy": 0.28,
+        }
+        diagnosis = self.agent.diagnose_bottleneck(state)
+        plan = self.agent._tool_plan(diagnosis)
+        cycle = plan["actual_cycle"]
+        ratio_pct = int(round(float(plan["reroute"]["diversion_ratio"]) * 100))
+
+        # Quoting only tool-produced values passes (cycle, diversion percent, offsets).
+        traceable = [
+            f"方案 B 将设计周期调整为 {cycle}s，并诱导 {ratio_pct}% 车流经旁路分流，"
+            f"干线相位差 {plan['green_wave']['offsets']}s 协调放行。"
+        ]
+        self.assertTrue(self.agent._narrative_numbers_traceable(traceable, plan, ratio_pct))
+
+        # Fabricated KPI percentages (delay -35%, queue -52% are not tool outputs at
+        # strategy stage) must be rejected so the deterministic template takes over.
+        fabricated = ["方案 B 预计降低延误 35%，减少排队 52%，综合成效提升 48%。"]
+        self.assertFalse(self.agent._narrative_numbers_traceable(fabricated, plan, ratio_pct))
 
     def test_strategy_b_fallback_rationale_populated(self):
         """Strategy B must always contain non-empty rationale even in deterministic fallback mode."""
@@ -709,6 +738,36 @@ class TestTrafficAgentDSS(unittest.TestCase):
         # Travel time ~21.6s -> reverse link step = 90.0 - 21.6 = 68.4s
         self.assertEqual(res_rev["offsets"][1], 68.4)
         self.assertGreater(res_rev["bandwidth_reverse_seconds"], 0.0)
+
+    def test_green_wave_bandwidth_graphical_method(self):
+        """Bandwidth must come from the time-space-diagram window intersection, not a heuristic."""
+        # Perfect one-way progression: a platoon leaving J0 on green arrives at J1 on green,
+        # so the forward band equals the full arterial green (50s), not "min green - 4s".
+        res_perfect = self.green_wave.compute_offsets(
+            intersection_distances=[300.0],
+            cycle_length=90.0,
+            green_splits_arterial=[50.0, 50.0],
+            progression_speed=13.89,
+            bidirectional=False,
+        )
+        self.assertAlmostEqual(res_perfect["bandwidth_seconds"], 50.0, places=1)
+        self.assertIn(res_perfect["coordination_quality"],
+                      ("forward_progression_only", "both_directions_progression"))
+
+        # Infeasible progression: 10s greens cannot bridge the blended offsets in either
+        # direction, so both bands must be exactly zero instead of a fabricated positive value.
+        res_infeasible = self.green_wave.compute_offsets(
+            intersection_distances=[300.0, 300.0],
+            cycle_length=90.0,
+            green_splits_arterial=[10.0, 10.0, 10.0],
+            progression_speed=13.89,
+            bidirectional=True,
+            weight_forward=0.6,
+        )
+        self.assertEqual(res_infeasible["bandwidth_seconds"], 0.0)
+        self.assertEqual(res_infeasible["bandwidth_ratio_percent"], 0.0)
+        self.assertEqual(res_infeasible["bandwidth_reverse_seconds"], 0.0)
+        self.assertEqual(res_infeasible["coordination_quality"], "no_common_band")
 
     def test_green_wave_speed_and_distance_guards(self):
         """Tests defensive guards for non-positive progression speeds and negative distances."""

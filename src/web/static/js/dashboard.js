@@ -342,6 +342,7 @@ async function loadInitialData() {
       renderCoTDiagnosis();
       renderStrategies();
       renderRolloutKPIs();
+      renderExecutionModeNotice();
       renderCharts();
       await fetchDecisionReport();
     } else {
@@ -359,6 +360,7 @@ function loadFallbackData() {
   renderCoTDiagnosis();
   renderStrategies();
   renderRolloutKPIs();
+  renderExecutionModeNotice();
   renderCharts();
 }
 
@@ -472,6 +474,38 @@ function renderRolloutKPIs() {
   if (speedAct) speedAct.textContent = speedK === null ? NO_DATA : `至 ${speedK} km/h`;
   if (tpAct) tpAct.textContent = tput === null ? NO_DATA : `达 ${tput} veh/h`;
   if (co2Act) co2Act.textContent = co2K === null ? NO_DATA : `降至 ${co2K} kg`;
+}
+
+// Show a prominent banner whenever the rollout payload is NOT a live SUMO measurement
+// (calibrated empirical data or a fallback after a sandbox failure). The banner is the
+// visual guarantee that downgraded data can never pass as measured output on screen.
+function renderExecutionModeNotice() {
+  const banner = document.getElementById('executionModeBanner');
+  const degradedBanner = document.getElementById('degradedNoticeBanner');
+  const rollout = state.rollout;
+  const mode = rollout?.execution_mode || '';
+  const degraded = rollout?.degraded === true || mode.startsWith('calibrated');
+  const reason = rollout?.fallback_reason || '';
+
+  if (banner) {
+    if (degraded) {
+      banner.textContent = reason
+        ? `⚠ 当前展示为降级/标定数据（非 SUMO 微观仿真实测结果）：${reason}`
+        : '⚠ 当前展示为标定经验数据（非 SUMO 微观仿真实测结果）。请在控制面板勾选「微观 SUMO 进程推演」后重新运行，以获得实测指标。';
+      banner.classList.add('visible');
+    } else {
+      banner.classList.remove('visible');
+    }
+  }
+
+  if (degradedBanner) {
+    if (degraded && reason) {
+      degradedBanner.textContent = `⚠️ 系统推演降级提示：${reason}`;
+      degradedBanner.style.display = 'block';
+    } else {
+      degradedBanner.style.display = 'none';
+    }
+  }
 }
 
 // Charts Rendering via ECharts
@@ -634,16 +668,16 @@ function renderTimeSeriesChart() {
       data: steps,
       name: '秒',
       axisLine: { lineStyle: { color: isDark ? '#334155' : '#cbd5e1' } },
-      axisLabel: { color: isDark ? '#94a3b8' : '#64748b' }
+      axisLabel: { color: isDark ? '#94a3b8' : '#64748b', fontSize: 12 }
     },
-    yaxis: {
+    yAxis: {
       type: 'value',
       name: '排队长度 (m)',
-      nameTextStyle: { color: isDark ? '#94a3b8' : '#64748b' },
+      nameTextStyle: { color: isDark ? '#94a3b8' : '#64748b', fontSize: 12 },
       splitLine: {
         lineStyle: { color: isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.08)' }
       },
-      axisLabel: { color: isDark ? '#94a3b8' : '#64748b' }
+      axisLabel: { color: isDark ? '#94a3b8' : '#64748b', fontSize: 12 }
     },
     series: [
       {
@@ -759,6 +793,7 @@ async function executeAgentDecisionPipeline() {
       state.rollout = rolloutData;
 
       renderRolloutKPIs();
+      renderExecutionModeNotice();
       renderCharts();
 
       // 4. Export formatted decision report

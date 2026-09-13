@@ -15,6 +15,7 @@ import os
 import sys
 import json
 import math
+import re
 import inspect
 from pathlib import Path
 from typing import Dict, List, Any, Optional
@@ -185,6 +186,86 @@ class TrafficDecisionAgent:
             "reasoning_label": label,
             "reasoning_error": error,
         }
+
+    # ------------------------------------------------------------------ #
+    # LLM narrative numeric provenance guard
+    # ------------------------------------------------------------------ #
+    _NARRATIVE_NUMBER_RE = re.compile(r"(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(%|％)?")
+
+    @classmethod
+    def _narrative_numbers_traceable(
+        cls,
+        texts: List[str],
+        plan: Dict[str, Any],
+        reroute_pct: int,
+    ) -> bool:
+        """
+        True when every number quoted in the LLM narrative layer is traceable to a value
+        the traffic-engineering tools actually produced for this plan.
+
+        The narrative layer is allowed to *quote* tool output but never to *produce*
+        figures. Percentages are the dangerous case (e.g. a hallucinated "延误降低 35%"):
+        each one must match a tool value (directly or as a ratio scaled to percent) within
+        rounding tolerance. Bare integers 0-9 are tolerated unadorned — junction labels
+        (J1-J3) and lane counts are not quantified performance claims. Any violation
+        rejects the whole narrative so the deterministic template takes over, with the
+        degradation reported honestly via reasoning_mode.
+        """
+        timing = plan.get("timing") or {}
+        gw = plan.get("green_wave") or {}
+        rr = plan.get("reroute") or {}
+        inputs = plan.get("inputs_used") or {}
+        signal = plan.get("signal_program") or {}
+        arterial_green = plan.get("arterial_green") or 0.0
+        actual_cycle = plan.get("actual_cycle") or 0.0
+
+        candidates: List[Any] = [
+            actual_cycle, arterial_green,
+            plan.get("cross_green"), plan.get("yellow_time"),
+            timing.get("optimal_cycle"), timing.get("degree_of_saturation"),
+            gw.get("bandwidth_seconds"), gw.get("bandwidth_ratio_percent"),
+            gw.get("progression_speed_kmh"),
+            rr.get("diversion_ratio"), rr.get("diverted_flow_vph"),
+            inputs.get("queue_m"), inputs.get("link_length_m"),
+            inputs.get("bottleneck_occupancy"), inputs.get("bypass_occupancy"),
+            reroute_pct,
+            round(arterial_green / max(1.0, actual_cycle) * 100.0, 1),
+        ]
+        candidates.extend((signal.get(k) for k in (
+            "green_main", "green_cross", "yellow",
+            "min_green_main", "max_green_main", "min_green_cross", "max_green_cross",
+        )))
+        for seq in (
+            timing.get("flow_ratios"), gw.get("offsets"), gw.get("travel_times"),
+            inputs.get("phase_flows_pcu_h"), inputs.get("phase_lanes"),
+        ):
+            candidates.extend(seq or [])
+
+        allowed: List[float] = []
+        for v in candidates:
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v)):
+                allowed.append(float(v))
+
+        def traced(value: float) -> bool:
+            for a in allowed:
+                if abs(value - a) <= max(0.55, abs(a) * 0.015):
+                    return True
+                scaled = a * 100.0  # ratios may legitimately be quoted as percentages
+                if abs(value - scaled) <= max(0.55, abs(scaled) * 0.015):
+                    return True
+            return False
+
+        for text in texts:
+            if not text:
+                continue
+            for m in cls._NARRATIVE_NUMBER_RE.finditer(text):
+                value = float(m.group(1).replace(",", ""))
+                if m.group(2):
+                    if not traced(value):
+                        return False
+                elif value > 9 and not traced(value):
+                    return False
+        return True
 
     def _tool_plan(self, diagnosis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
@@ -534,14 +615,25 @@ class TrafficDecisionAgent:
             risk = str(payload.get("risk_warning") or "").strip()
 
             if desc_b and rationale:
-                if desc_a:
-                    strategy_a["description"] = desc_a
-                strategy_b["description"] = desc_b
-                strategy_b["rationale"] = rationale
-                if vms:
-                    strategy_b["vms_advisory"] = vms
-                if risk:
-                    strategy_b["risk_warning"] = risk
+                narrative_texts = [t for t in (desc_a, desc_b, vms, risk, *rationale) if t]
+                if self._narrative_numbers_traceable(narrative_texts, plan, reroute_pct):
+                    if desc_a:
+                        strategy_a["description"] = desc_a
+                    strategy_b["description"] = desc_b
+                    strategy_b["rationale"] = rationale
+                    if vms:
+                        strategy_b["vms_advisory"] = vms
+                    if risk:
+                        strategy_b["risk_warning"] = risk
+                else:
+                    # The narrative quoted figures the tools never produced. Reject the
+                    # whole narrative instead of publishing an uncheckable claim: the
+                    # deterministic template below only quotes computed values.
+                    mode = LLMReasoningClient.MODE_ERROR
+                    error = (
+                        "model narrative quoted numbers not traceable to tool outputs "
+                        "(numeric provenance guard)"
+                    )
             else:
                 mode = LLMReasoningClient.MODE_ERROR
                 error = "model response missing required strategy narrative fields"
@@ -1147,9 +1239,9 @@ class TrafficDecisionAgent:
         speed_tradeoff_note = ""
         if comp_b and (comp_b.get("speed_improvement_pct") or 0.0) < 0:
             speed_tradeoff_note = (
-                "\n> 💡 **速度指标说明**：方案 B 断面瞬时车速微幅下调，"
-                "系干线绿波协调与诱导控流下车流形成紧凑匀速巡航车队、消除急加急减速所致；"
-                "全域车辆延误降低、延误方差大幅收窄与吞吐量释放证明系统通行综合效能全面占优。\n"
+                "\n> 💡 **速度指标说明**：方案 B 断面平均车速较基线有所下降；"
+                "该指标与延误、吞吐等其他指标存在工程权衡，成因判定须以仿真输出与现场复核为准，"
+                "本报告不附加未经推演验证的归因解释。\n"
             )
 
         if comp_b:

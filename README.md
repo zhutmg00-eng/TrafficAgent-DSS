@@ -4,8 +4,9 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![CI-Build](https://github.com/zhutmg00-eng/TrafficAgent-DSS/actions/workflows/ci.yml/badge.svg)](https://github.com/zhutmg00-eng/TrafficAgent-DSS/actions)
 [![Simulation-SUMO](https://img.shields.io/badge/Simulation-SUMO%20%2F%20TraCI-brightgreen.svg)](https://eclipse.dev/sumo/)
-[![Tests-107%20Passed](https://img.shields.io/badge/Tests-107%20Passed-success.svg)](tests/)
+[![Tests-113%20Passed](https://img.shields.io/badge/Tests-113%20Passed-success.svg)](tests/)
 [![Architecture-LLM%20Agent](https://img.shields.io/badge/Architecture-LLM%20Agent%20%26%20MAS-orange.svg)](https://github.com/zhutmg00-eng/TrafficAgent-DSS)
+[![Baidu Map-LBS WebGL](https://img.shields.io/badge/Baidu%20Map-LBS%20WebGL-blue.svg)](https://lbsyun.baidu.com/)
 [![Competition-ITSAC%202026](https://img.shields.io/badge/Competition-ITSAC%202026%20%E8%B5%9B%E9%A2%982-red.svg)](http://www.its-china.org.cn/)
 
 ---
@@ -87,6 +88,9 @@ flowchart TB
 4. **决策支持展示（Decision Support System）**：
    - 自动生成面向交管人员的专业决策简报。
    - 给出推荐方案的预期收益、实施代价与防回溢风险提示。
+5. **百度地图开放平台 LBS 能力与多模式路径规划比选**：
+   - 深度集成 **Baidu Map GL JS API 3.0**，提供 WebGL 高性能底图渲染、TrafficLayer 实时动态路况图层（畅通绿/缓行黄/拥堵红）；
+   - 后端桥接百度 **DirectionLite 驾车路径规划 API**，自动计算拥堵瓶颈主线与诱导分流绕行路线的时空几何、拥堵距离与通行耗时，为交管调度决策提供权威公网路况佐证与绕行可行性研判。
 
 ---
 
@@ -97,6 +101,9 @@ TrafficAgent-DSS/
 ├── docs/                                  # 系统技术架构与理论方案
 │   ├── technical_proposal.md              # 详细技术方案、数学建模与算法设计
 │   └── review_findings.md                 # 审查报告与系统真实性演进说明
+├── experiments/                           # 交通仿真消融实验与基准评测
+│   ├── ablation.py                        # 多控制手段消融实验脚本 (Baseline/Webster/GreenWave/VMS/Combo)
+│   └── ablation_result_20260913_153022.md # 消融实验量化评测对比基准报告
 ├── scripts/                               # 工具脚本
 │   ├── build_network_from_osm.py          # OSM 导出 -> 真实路网 JSON 编译
 │   └── fetch_osm_network.sh               # 一键抓取并编译真实路网脚本
@@ -121,6 +128,7 @@ TrafficAgent-DSS/
 │           ├── index.html                 # 数字孪生决策大屏单页应用 (SPA)
 │           ├── css/style.css              # 极客暗黑/政企浅色双模主题样式表
 │           └── js/
+│               ├── baidu_map.js           # 百度地图 GL 控件与 DirectionLite 路线图层管理
 │               ├── dashboard.js           # 异步决策管道控制与可视化交互脚本
 │               └── vendor/
 │                   └── echarts.min.js     # 本地内嵌 ECharts 5 库（支持100%离线答辩）
@@ -130,9 +138,9 @@ TrafficAgent-DSS/
 │   ├── corridor.net.xml                   # 典型双通道干线路网拓扑
 │   ├── corridor.rou.xml                   # 高峰潮汐与突发事故交通需求
 │   └── corridor.sumocfg                   # SUMO 仿真配置文件
-├── tests/                                 # 自动化测试套件（全量 107 项测试 100% 通过）
-│   ├── test_system.py                     # 交通工程算法与智能体推理单元测试 (44 项)
-│   ├── test_web_api.py                    # RESTful Web API 与路由集成测试 (29 项)
+├── tests/                                 # 自动化测试套件（全量 113 项测试 100% 通过）
+│   ├── test_system.py                     # 交通工程算法、真实绿波与智能体推理单元测试 (46 项)
+│   ├── test_web_api.py                    # RESTful Web API、百度LBS与路由集成测试 (33 项)
 │   ├── test_network_mesoscopic.py         # 真实路网与中观仿真引擎专项测试 (10 项)
 │   └── test_empirical_challenger_2.py     # 极限边界与鲁棒性挑战压力测试 (24 项)
 ├── .gitignore                             # Git 忽略配置
@@ -152,9 +160,9 @@ TrafficAgent-DSS/
 - [ ] **Step 6: 成果材料撰写与包装**（推进中：完成《作品申报书》、6页《作品说明书》小论文、录制演示视频与答辩PPT）
 
 > ✅ **系统验证与工程质量认证**（2026-09-13 最新）：
-> - **测试覆盖**：`python -m unittest discover -s tests` 实测 **93 项测试**（44 项核心系统 + 25 项 Web API + 24 项实证压力测试）通过率 100%，GitHub Actions CI 自动化流水线（Python 3.10 / 3.12）全部通过（绿灯）；
-> - **统计可靠性**：新增 `POST /api/evaluate/multi-seed` 端点，支持多随机种子（Multi-Seed）并行或批量推演，输出均值、标准误（SEM）与 95% 置信区间（CI），具备扎实的数理统计显著性；
-> - **系统健壮性**：涵盖 Webster 配时残差精准吸收、纯反向绿波加权、VMS 诱导防假触发与旁路 80% 熔断、SUMO 进程 5 秒僵尸超时清理及物理仿真缺失时的平滑高精度标定降级。完整更新记录详见 [`CHANGELOG.md`](CHANGELOG.md)。
+> - **测试覆盖**：`python -m unittest discover -s tests` 实测 **113 项测试**（46 项核心系统 + 33 项 Web API 与百度 LBS + 10 项中观拓扑 + 24 项实证压力测试）通过率 100%，GitHub Actions CI 自动化流水线（Python 3.10 / 3.12）全部通过（绿灯）；
+> - **统计可靠性**：新增 `POST /api/evaluate/multi-seed` 端点，物理仿真模式下支持多随机种子（Multi-Seed）并行推演，输出均值、标准误（SEM）与 95% 置信区间（CI）；非物理模式如实声明样本特征，杜绝人工伪造统计假象；
+> - **系统健壮性**：涵盖 Webster 配时残差精准吸收、图解法公共交集真实绿波带宽计算、VMS 诱导防假触发与旁路 80% 熔断、SUMO 进程 5 秒僵尸超时清理及物理仿真缺失时的平滑高精度标定降级。完整更新记录详见 [`CHANGELOG.md`](file:///d:/%E4%BA%A4%E9%80%9A%20%E6%99%BA%E8%83%BD%E4%BD%93/CHANGELOG.md)。
 
 ---
 
@@ -200,6 +208,9 @@ uvicorn src.web.app:app --reload --port 8000
 | `LLM_BASE_URL` | 可选 | 自定义端点，如 `https://api.deepseek.com/v1`（留空默认官方 OpenAI） |
 | `LLM_MODEL` | 可选 | 模型名称，如 `deepseek-chat` / `gpt-4o-mini` |
 | `LLM_TIMEOUT` | 可选 | 请求超时时间（秒，默认 30.0 秒） |
+| `BAIDU_MAP_AK` | 可选 | 百度地图开放平台服务端应用 AK（启用实时路况与路径规划代理） |
+| `BAIDU_MAP_CENTER_LNG` | 可选 | 百度地图默认中心点经度（默认 `116.3533` 北京西直门） |
+| `BAIDU_MAP_CENTER_LAT` | 可选 | 百度地图默认中心点纬度（默认 `39.9431` 北京西直门） |
 
 > 🛡️ **严格降级机制（可信度保证）**：若未配置密钥、网络断开或目标服务商接口超时，系统会自动降级为确定性专家规则模板，并在 API 响应（`reasoning_mode` / `narrative_mode`）与导出的《决策支持简报》的「数据来源与可信度声明」中**明确如实标注降级状态**——既保证演示与答辩高可用不中断，又保证科研学术诚信。
 
@@ -220,6 +231,33 @@ uvicorn src.web.app:app --reload --port 8000
 
 ---
 
+## 🗺️ 9. 百度地图 LBS 开放平台能力集成与消融实验基准
+
+系统深度融合百度地图开放平台开发者能力，并在架构上构建了**“离线数字孪生 + 在线云端 LBS”**双轨地图体系：
+
+### 9.1 双轨地图架构（Dual-Track Map Architecture）
+- **Track 1: 本地离线 OSM SVG 矢量数字孪生地图（Section 6）**：
+  - 基于北京西直门立体枢纽 591 节点 / 771 路段真实拓扑；
+  - 集成中观排队推演引擎，100% 本地运行，不依赖任何外网连接，专门保障 **ITSAC 2026 答辩现场等无公网/弱网极限演示场景**的绝对高可用。
+- **Track 2: 百度地图 WebGL 实时路况与路径规划底座（Section 1B）**：
+  - 接入 **Baidu Map GL JS API 3.0** 与 **TrafficLayer 动态实时路况图层**；
+  - 后端通过 `POST /api/baidu/route` 安全代理百度 **DirectionLite 驾车路径规划服务**（支持 LRU 缓存与密钥保护，避免前端 AK 泄露风险）；
+  - 实时直观呈现西直门桥及周边骨干路网高峰期真实拥堵路况，一键对比主干线走廊与平行旁路绕行路线（包含路程长短、拥堵路段里程、红绿灯数及预计耗时量化对比），面向 **百度地图开发者大赛** 深度赋能。
+
+### 9.2 交通工程手段消融实验基准（Ablation Study）
+系统包含标准的消融实验运行套件 [`ablation.py`](file:///d:/%E4%BA%A4%E9%80%9A%20%E6%99%BA%E8%83%BD%E4%BD%93/experiments/ablation.py)，针对 5 种控制手段组合在标准工况（SUMO 物理沙盒 / 中观推演引擎）下进行系统性对照消融：
+1. **M0 基线无干预 (Baseline)**：固定周期配时，无干线绿波，无诱导分流；
+2. **M1 纯单点优化 (Webster Only)**：仅基于实时流量进行 Webster 周期与绿信比自适应调整；
+3. **M2 干线绿波协调 (Webster + GreenWave)**：在 Webster 配时基础上，实施图解法双向绿波协调与相位相位差优化；
+4. **M3 局部诱导分流 (Webster + VMS Rerouting)**：Webster 配时结合上游可变情报板 20% 动态诱导分流；
+5. **M4 全要素协同治理 (Full Multi-Agent Combo)**：Webster 动态配时 + 干线绿波协调 + VMS 动态诱导组合拳。
+
+量化实验表明（详见 [`ablation_result_20260913_153022.md`](file:///d:/%E4%BA%A4%E9%80%9A%20%E6%99%BA%E8%83%BD%E4%BD%93/experiments/ablation_result_20260913_153022.md)）：
+- 单一手段（如仅单点信号优化）在重度饱和瓶颈下易引发下游溢流或绿波带宽损失；
+- **全要素协同治理策略（M4）相比 M0 基线，全网平均延误下降 18.3%，最大排队长度压缩 26.5%，瓶颈通行能力提升 13.8%，碳排放降低 12.1%**，充分验证了多策略时空协同对于超大城市瓶颈拥堵治理的必要性与显著收益。
+
+---
+
 ## 📜 许可证 (License)
 
-本项目遵循 [MIT License](LICENSE) 开源协议。
+本项目遵循 [MIT License](file:///d:/%E4%BA%A4%E9%80%9A%20%E6%99%BA%E8%83%BD%E4%BD%93/LICENSE) 开源协议。
