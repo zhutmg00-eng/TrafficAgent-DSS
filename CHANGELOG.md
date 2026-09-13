@@ -9,6 +9,52 @@
 
 ---
 
+## [2026-09-13] v2.2.1：引入 Microsoft Playwright 浏览器端到端（E2E）测试体系 + 根治前端 JS 变量提升堆栈溢出 Bug
+
+**主题**：响应前端可视化验证与工程质量需求，正式接入 **Microsoft Playwright (Python)** 浏览器自动化测试套件（`tests/e2e/`），覆盖数字孪生大屏全景渲染、双轨地图挂载、大模型热切换弹窗、7步实操行动清单手风琴与推演流水线验证。在实机测试过程中精准定位并彻底消除了前端 `dashboard.js` 中因函数声明提升（Hoisting）导致的 `RangeError: Maximum call stack size exceeded` 页面初始化死循环。全量测试提升至 **127 项 100% 通过**（113 项核心单元/API + 14 项 Playwright 前端 E2E）。
+
+**影响文件**：`src/web/static/js/dashboard.js`、`tests/e2e/`（新建 conftest.py / test_core_ui.py / test_llm_modal.py / test_maps_ui.py / test_playbook_detectors.py / test_rollout_pipeline.py / test_visual_snapshots.py）、`scripts/run_e2e.py`、`requirements.txt`、`.gitignore`、`README.md`、`CHANGELOG.md`
+
+**兼容性**：
+1. **完全向下兼容**：核心 113 项单元与接口测试（`python -m unittest discover -s tests`）完全独立无干扰，保持毫秒/秒级极速反馈；
+2. **测试分层解耦**：Playwright E2E 前端测试独立运行（`python scripts/run_e2e.py` 或 `pytest tests/e2e`），测试执行期间通过 Session Fixture 自动在后台随机高位端口启动隔离 FastAPI 测试服务并自动优雅回收，零端口冲突风险。
+
+---
+
+### 一、重大前端 Bug 排查与根治（由 Playwright 深度发现）
+- **缺陷现象**：浏览器初次加载决策大屏时，控制台抛出 `RangeError: Maximum call stack size exceeded`，导致 Section 6 西直门 OSM SVG 矢量地图与 Section 7 一线行动指令清单首屏静默渲染中断。传统后端 HTTP 单元测试无法检测此运行期异常。
+- **根因分析**：旧版 `dashboard.js` 扩展功能时采用了 `const _originalLoadInitialData = loadInitialData; function loadInitialData() { ... }` 写法。JavaScript 引擎会将 `function` 声明提升（Hoisting）至作用域顶端，导致赋值时 `_originalLoadInitialData` 指向了自身，在首次调用时触发无限递归堆栈溢出。
+- **架构重构与修复**：废除危险的猴子补丁机制，将路网加载、行动清单生成、检测器表格渲染与推演结果更新直接内联编排至原生的 `loadInitialData()`、`onScenarioChanged()` 与 `executeAgentDecisionPipeline()` 中。修复后，SVG 771 条路段连线与 7 项作战指令稳定可靠渲染。
+
+### 二、Playwright E2E 测试套件全景覆盖 (`tests/e2e/`)
+1. **基础状态与双模主题 (`test_core_ui.py`, 3 项)**：
+   - 验证大屏品牌标识、微观沙盒与智能体在线状态指示灯；
+   - 验证政企浅色/极客暗黑主题一键切换与 LocalStorage 持久化；
+   - 捕获 1080p 全景渲染快照。
+2. **大模型配置弹窗 ccSwitch 交互流 (`test_llm_modal.py`, 3 项)**：
+   - 验证配置弹窗打开、取消与关闭；
+   - 验证百度千帆、DeepSeek、硅基流动、Ollama 预设端点一键填充；
+   - 验证 API Key 密码明文/密文切换。
+3. **双轨地图与数字孪生全要素验证 (`test_maps_ui.py`, 2 项)**：
+   - 验证 Section 1B 百度地图 GL 画布容器、实时路况开关与绕行比选工具栏；
+   - 验证 Section 6 西直门 OSM SVG 771 条 `polyline.road-edge` 路段元素挂载、路段点击检视器数据联动响应及基线/策略视图切换。
+4. **行动作战清单与虚拟检测器明细表 (`test_playbook_detectors.py`, 2 项)**：
+   - 验证 Section 7 的 7 步实战行动清单卡片完整性及责任人、时机、预期效果展示；
+   - 验证 Section 8 虚拟检测器明细表 10 列表头结构。
+5. **推演流水线与学术诚信降级横幅 (`test_rollout_pipeline.py`, 2 项)**：
+   - 验证前端触发推演、Loading 状态流转、KPI 指标卡片由 `—` 动态刷新为百分比；
+   - 验证 ECharts 雷达图与排队时序曲线 `<canvas>` 画布挂载与非空渲染；
+   - 验证当推演降级时，大屏顶部显式横幅（`#degradedNoticeBanner`）即时预警。
+6. **响应式多分辨率快照存档 (`test_visual_snapshots.py`, 2 项)**：
+   - 自动化采集 1080p（监控中心大屏）与 768p（笔记本电脑）双分辨率下深/浅主题的高清截图，沉淀至 `tests/e2e/screenshots/`。
+
+### 三、一键运行工具与工程配置
+- 新增 `scripts/run_e2e.py`，支持一键在本地或 CI 环境中启动 Playwright 测试套件；
+- 更新 `requirements.txt`，补全 `playwright`、`pytest`、`pytest-playwright` 依赖；
+- 更新 `.gitignore`，安全过滤 `.pytest_cache/` 与 `tests/e2e/screenshots/`。
+
+---
+
 ## [2026-09-13] v2.2.0：P0 诚信整改 + 百度地图 LBS 真实路网底座 + 双轨地图架构 + 浅色主题可读性
 
 **主题**：融合 `feat/integrity-baidu-lbs` 分支，对标“评委/队友与赛事技术审查”视角完成全方位诚信与学术防伪整改（P0），接入百度地图开放平台 LBS 核心能力（百度地图 JS API GL 实时路况底座、DirectionLite 驾车路径规划代理、百度千帆 ERNIE 端点，面向 2026 百度地图开发者创作大赛），同时实现与北京西直门 591 节点/771 路段 OSM SVG 矢量数字孪生地图的**双轨地图并存**。系统版本号跃迁为 `v2.2.0`。

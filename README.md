@@ -4,7 +4,8 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![CI-Build](https://github.com/zhutmg00-eng/TrafficAgent-DSS/actions/workflows/ci.yml/badge.svg)](https://github.com/zhutmg00-eng/TrafficAgent-DSS/actions)
 [![Simulation-SUMO](https://img.shields.io/badge/Simulation-SUMO%20%2F%20TraCI-brightgreen.svg)](https://eclipse.dev/sumo/)
-[![Tests-113%20Passed](https://img.shields.io/badge/Tests-113%20Passed-success.svg)](tests/)
+[![Tests-127%20Passed](https://img.shields.io/badge/Tests-127%20Passed%20(113%20Core%20%2B%2014%20E2E)-success.svg)](tests/)
+[![E2E-Playwright](https://img.shields.io/badge/E2E-Microsoft%20Playwright-blueviolet.svg)](https://playwright.dev/)
 [![Architecture-LLM%20Agent](https://img.shields.io/badge/Architecture-LLM%20Agent%20%26%20MAS-orange.svg)](https://github.com/zhutmg00-eng/TrafficAgent-DSS)
 [![Baidu Map-LBS WebGL](https://img.shields.io/badge/Baidu%20Map-LBS%20WebGL-blue.svg)](https://lbsyun.baidu.com/)
 [![Competition-ITSAC%202026](https://img.shields.io/badge/Competition-ITSAC%202026%20%E8%B5%9B%E9%A2%982-red.svg)](http://www.its-china.org.cn/)
@@ -106,7 +107,8 @@ TrafficAgent-DSS/
 │   └── ablation_result_20260913_153022.md # 消融实验量化评测对比基准报告
 ├── scripts/                               # 工具脚本
 │   ├── build_network_from_osm.py          # OSM 导出 -> 真实路网 JSON 编译
-│   └── fetch_osm_network.sh               # 一键抓取并编译真实路网脚本
+│   ├── fetch_osm_network.sh               # 一键抓取并编译真实路网脚本
+│   └── run_e2e.py                         # Playwright 前端 E2E 自动化测试一键运行脚本
 ├── src/                                   # 系统源码
 │   ├── agents/                            # LLM 智能体决策核心
 │   │   ├── llm_client.py                  # 大模型多后端统一调用与模型自动发现客户端
@@ -138,13 +140,21 @@ TrafficAgent-DSS/
 │   ├── corridor.net.xml                   # 典型双通道干线路网拓扑
 │   ├── corridor.rou.xml                   # 高峰潮汐与突发事故交通需求
 │   └── corridor.sumocfg                   # SUMO 仿真配置文件
-├── tests/                                 # 自动化测试套件（全量 113 项测试 100% 通过）
+├── tests/                                 # 自动化测试套件（全量 127 项测试 100% 通过）
 │   ├── test_system.py                     # 交通工程算法、真实绿波与智能体推理单元测试 (46 项)
 │   ├── test_web_api.py                    # RESTful Web API、百度LBS与路由集成测试 (33 项)
 │   ├── test_network_mesoscopic.py         # 真实路网与中观仿真引擎专项测试 (10 项)
-│   └── test_empirical_challenger_2.py     # 极限边界与鲁棒性挑战压力测试 (24 项)
+│   ├── test_empirical_challenger_2.py     # 极限边界与鲁棒性挑战压力测试 (24 项)
+│   └── e2e/                               # Playwright 浏览器端到端前端测试套件 (14 项)
+│       ├── conftest.py                    # 独立 FastAPI 后台测试服务 Fixture
+│       ├── test_core_ui.py                # 大屏基础渲染、主题切换与全景截图 (3 项)
+│       ├── test_llm_modal.py              # 大模型配置弹窗与 ccSwitch 交互流 (3 项)
+│       ├── test_maps_ui.py                # 双轨地图 (百度 GL + 西直门 OSM SVG) 验证 (2 项)
+│       ├── test_playbook_detectors.py     # 7步实战清单与检测器数据表交互 (2 项)
+│       ├── test_rollout_pipeline.py       # 推演流水线、ECharts 挂载与降级横幅 (2 项)
+│       └── test_visual_snapshots.py       # 1080p/768p 多分辨率视觉快照存档 (2 项)
 ├── .gitignore                             # Git 忽略配置
-├── requirements.txt                       # Python 依赖清单 (FastAPI/TraCI/Uvicorn)
+├── requirements.txt                       # Python 依赖清单 (FastAPI/TraCI/Uvicorn/Playwright)
 └── README.md                              # 项目主页（本文件）
 ```
 
@@ -255,6 +265,48 @@ uvicorn src.web.app:app --reload --port 8000
 量化实验表明（详见 [`ablation_result_20260913_153022.md`](file:///d:/%E4%BA%A4%E9%80%9A%20%E6%99%BA%E8%83%BD%E4%BD%93/experiments/ablation_result_20260913_153022.md)）：
 - 单一手段（如仅单点信号优化）在重度饱和瓶颈下易引发下游溢流或绿波带宽损失；
 - **全要素协同治理策略（M4）相比 M0 基线，全网平均延误下降 18.3%，最大排队长度压缩 26.5%，瓶颈通行能力提升 13.8%，碳排放降低 12.1%**，充分验证了多策略时空协同对于超大城市瓶颈拥堵治理的必要性与显著收益。
+
+---
+
+## 🎭 10. 前端端到端自动化测试体系 (Playwright E2E Testing)
+
+为了彻底解决传统后端 HTTP 单元测试无法覆盖前端 JavaScript 运行时异常、DOM 渲染错漏、ECharts 图表挂载与复杂人机交互流的盲区，系统全面引入了基于 **Microsoft Playwright** 的端到端自动化测试体系：
+
+### 10.1 核心测试覆盖维度 (`tests/e2e/`)
+1. **大屏核心状态与主题渲染 ([`test_core_ui.py`](file:///d:/%E4%BA%A4%E9%80%9A%20%E6%99%BA%E8%83%BD%E4%BD%93/tests/e2e/test_core_ui.py))**：
+   - 验证大屏品牌标题、沙盒与智能体在线状态徽标；
+   - 验证政企浅色/极客暗黑双模主题一键切换与 LocalStorage 状态持久化；
+   - 自动生成 1080p 全景渲染快照。
+2. **大模型配置弹窗与 ccSwitch 交互流 ([`test_llm_modal.py`](file:///d:/%E4%BA%A4%E9%80%9A%20%E6%99%BA%E8%83%BD%E4%BD%93/tests/e2e/test_llm_modal.py))**：
+   - 验证模态对话框淡入与关闭交互；
+   - 验证服务商快捷标签（百度千帆、DeepSeek、硅基流动、OpenAI、Ollama）自动填充；
+   - 验证 API Key 密码明文/密文切换。
+3. **双轨地图与数字孪生全要素验证 ([`test_maps_ui.py`](file:///d:/%E4%BA%A4%E9%80%9A%20%E6%99%BA%E8%83%BD%E4%BD%93/tests/e2e/test_maps_ui.py))**：
+   - Section 1B：验证百度地图 WebGL 容器、TrafficLayer 实时路况开关与路径规划对比工具栏；
+   - Section 6：验证北京西直门真实 OSM SVG 矢量地图（771 条 `polyline.road-edge` 路段元素）完整挂载，验证路段点击检视器（Inspector）数据联动响应。
+4. **行动作战清单与虚拟检测器明细表 ([`test_playbook_detectors.py`](file:///d:/%E4%BA%A4%E9%80%9A%20%E6%99%BA%E8%83%BD%E4%BD%93/tests/e2e/test_playbook_detectors.py))**：
+   - Section 7：验证一线 7 步实操行动清单（Action Playbook）卡片及责任人、时机、验证方式展示；
+   - Section 8：验证路网检测器全量表格 10 列表头结构与排序交互。
+5. **推演流水线与学术诚信降级横幅 ([`test_rollout_pipeline.py`](file:///d:/%E4%BA%A4%E9%80%9A%20%E6%99%BA%E8%83%BD%E4%BD%93/tests/e2e/test_rollout_pipeline.py))**：
+   - 验证前端触发推演、Loading 状态流转、KPI 指标卡片动态刷新；
+   - 验证 ECharts 雷达图与排队消散时序曲线 `<canvas>` 画布真实挂载；
+   - 验证当推演降级时，大屏顶部显式横幅（`#degradedNoticeBanner`）即时预警，杜绝隐瞒降级。
+6. **响应式多分辨率快照存档 ([`test_visual_snapshots.py`](file:///d:/%E4%BA%A4%E9%80%9A%20%E6%99%BA%E8%83%BD%E4%BD%93/tests/e2e/test_visual_snapshots.py))**：
+   - 自动采集 1920x1080（监控中心大屏）与 1366x768（笔记本电脑）双分辨率下深/浅主题的高清截图，沉淀至 `tests/e2e/screenshots/`。
+
+### 10.2 本地运行与 CI 集成
+```bash
+# 1. 首次运行需下载 Chromium 浏览器内核
+playwright install chromium
+
+# 2. 一键运行全部前端 E2E 自动化测试（自动在后台起停隔离测试服务）
+python scripts/run_e2e.py
+
+# 3. 或通过 pytest 直接运行
+pytest tests/e2e -v
+```
+
+> 🛠️ **关键缺陷排查实录**：在引入 Playwright E2E 测试过程中，成功捕获并彻底根治了一处由于 JavaScript 函数声明提升（Hoisting）导致的 `RangeError: Maximum call stack size exceeded` 页面初始化死循环。该隐患此前导致 Section 6 矢量地图与 Section 7 行动清单在浏览器首屏渲染中断，而纯后端测试完全无法察觉。Playwright 的引入为大屏系统提供了坚实的前端工程质量护城河。
 
 ---
 

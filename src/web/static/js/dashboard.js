@@ -221,6 +221,7 @@ function onScenarioChanged() {
   if (bypassDelta) bypassDelta.textContent = config.bypass_delta;
 
   showToast(`已加载场景：${state.corridor} · ${state.congestionType}`, 'info');
+  loadRoadNetwork();
 }
 
 // Bind Event Handlers
@@ -353,6 +354,11 @@ async function loadInitialData() {
     console.warn('Network issue fetching baseline, using client fallback:', err);
     loadFallbackData();
   }
+
+  // Load road network on startup
+  await loadRoadNetwork();
+  // After baseline loaded, render action checklist
+  loadActionPlan();
 }
 
 function loadFallbackData() {
@@ -795,6 +801,31 @@ async function executeAgentDecisionPipeline() {
       renderRolloutKPIs();
       renderExecutionModeNotice();
       renderCharts();
+
+      // Render detector table from rollout
+      const detectors = rolloutData.detectors;
+      const engine = rolloutData.engine;
+      if (detectors || engine) {
+        renderDetectorTable(detectors, engine);
+      }
+
+      // Render action checklist
+      loadActionPlan();
+
+      // If rollout includes network data, update map
+      if (rolloutData.network) {
+        currentNetworkData = rolloutData.network;
+        renderRoadNetwork();
+      }
+
+      // If rollout includes map_snapshot, update map view
+      if (rolloutData.map_snapshot) {
+        if (!currentNetworkData) currentNetworkData = {};
+        currentNetworkData.map_snapshot = rolloutData.map_snapshot;
+        if (mapViewState === 'strategy') {
+          renderRoadNetwork();
+        }
+      }
 
       // 4. Export formatted decision report
       await fetchDecisionReport();
@@ -1375,72 +1406,6 @@ function attachDetectorSortHandlers() {
   });
 }
 
-// ==========================================================================
-// Extension: executeAgentDecisionPipeline with new fields
-// ==========================================================================
-
-// Patch executeAgentDecisionPipeline to also handle new rollout fields
-// We save the original and wrap it
-const _originalExecutePipeline = executeAgentDecisionPipeline;
-
-function executeAgentDecisionPipeline() {
-  return _originalExecutePipeline().then(() => {
-    // After pipeline completes, render new sections
-    const rolloutData = state.rollout;
-    if (rolloutData) {
-      // Render detector table from rollout
-      const detectors = rolloutData.detectors;
-      const engine = rolloutData.engine;
-      if (detectors || engine) {
-        renderDetectorTable(detectors, engine);
-      }
-
-      // Render action checklist
-      loadActionPlan();
-
-      // If rollout includes network data, update map
-      if (rolloutData.network) {
-        currentNetworkData = rolloutData.network;
-        renderRoadNetwork();
-      }
-
-      // If rollout includes map_snapshot, update map view
-      if (rolloutData.map_snapshot) {
-        if (!currentNetworkData) currentNetworkData = {};
-        currentNetworkData.map_snapshot = rolloutData.map_snapshot;
-        if (mapViewState === 'strategy') {
-          renderRoadNetwork();
-        }
-      }
-    }
-  });
-}
-
-// ==========================================================================
-// Extension: loadInitialData also loads road network
-// ==========================================================================
-
-const _originalLoadInitialData = loadInitialData;
-
-async function loadInitialData() {
-  await _originalLoadInitialData();
-  // Load road network on startup
-  const net = await loadRoadNetwork();
-  // After baseline loaded, render action checklist
-  loadActionPlan();
-}
-
-// ==========================================================================
-// Extension: onScenarioChanged also reloads road network
-// ==========================================================================
-
-const _originalOnScenarioChanged = onScenarioChanged;
-
-function onScenarioChanged() {
-  _originalOnScenarioChanged();
-  // Reload road network after scenario change
-  loadRoadNetwork();
-}
 
 // ==========================================================================
 // LLM Switcher (ccSwitch Style Model Detection & Hot-Swap)
