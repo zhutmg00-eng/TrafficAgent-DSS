@@ -13,6 +13,8 @@ Covers the layer that puts the LLM *inside* the control loop
    deployable policy and an explicit mode, never an invented parameter set.
 5. Toolchain integration — `_tool_plan(policy=None)` is unchanged; an overlay actually
    moves the deployed values; `apply_diversion_override` keeps derived fields consistent.
+6. Deployed-control fidelity — `build_control_params` is the single source of truth for
+   what reaches the simulator, pinned against the legacy hand-built dict.
 """
 
 import unittest
@@ -413,6 +415,105 @@ class TestToolchainIntegration(unittest.TestCase):
         plan = self.agent._tool_plan(DIAGNOSIS)
         self.assertIn("upstream_flow_vph", plan["inputs_used"])
         self.assertIn("bypass_spare_capacity_vph", plan["inputs_used"])
+
+
+class TestControlParamBuilder(unittest.TestCase):
+    """
+    `build_control_params` is the single source of truth for "what gets deployed".
+
+    It replaced three hand-written copies of the same dict (strategy A, strategy B and
+    the closed loop), so these tests pin the legacy construction as the reference: if the
+    refactor had changed a deployed value, the simulation would silently stop matching
+    the plan the report claims was executed.
+    """
+
+    def setUp(self):
+        self.agent = TrafficDecisionAgent()
+        self.plan = self.agent._tool_plan(DIAGNOSIS)
+
+    def test_coordinated_program_uses_green_wave_offsets(self):
+        ctl = self.agent.build_control_params(self.plan, True)
+        self.assertEqual(
+            ctl["signal_program"]["first_green_start"],
+            list(self.plan["green_wave"]["offsets"]),
+        )
+        self.assertTrue(ctl["green_wave"])
+
+    def test_uncoordinated_program_starts_every_junction_at_zero(self):
+        ctl = self.agent.build_control_params(self.plan, False)
+        self.assertEqual(ctl["signal_program"]["first_green_start"], [0.0, 0.0, 0.0])
+        self.assertFalse(ctl["green_wave"])
+
+    def test_rerouting_switch_forces_zero_diversion(self):
+        self.assertGreater(self.plan["reroute"]["diversion_ratio"], 0.0)
+        disabled = self.agent.build_control_params(self.plan, True, use_rerouting=False)
+        self.assertEqual(disabled["reroute_ratio"], 0.0)
+        enabled = self.agent.build_control_params(self.plan, True)
+        self.assertAlmostEqual(
+            enabled["reroute_ratio"], self.plan["reroute"]["diversion_ratio"], places=6
+        )
+
+    def test_webster_switch_is_forwarded(self):
+        self.assertFalse(self.agent.build_control_params(self.plan, True, use_webster=False)["webster"])
+        self.assertTrue(self.agent.build_control_params(self.plan, True)["webster"])
+
+    def test_signal_program_is_not_mutated_in_place(self):
+        before = dict(self.plan["signal_program"])
+        self.agent.build_control_params(self.plan, True)
+        self.assertEqual(self.plan["signal_program"], before)
+
+    def test_matches_the_legacy_hand_built_control_dict(self):
+        for coordinated in (True, False):
+            expected = {
+                "signal_program": dict(
+                    self.plan["signal_program"],
+                    first_green_start=(
+                        list(self.plan["green_wave"]["offsets"])
+                        if coordinated
+                        else [0.0, 0.0, 0.0]
+                    ),
+                ),
+                "reroute_ratio": self.plan["reroute"]["diversion_ratio"],
+                "green_wave": coordinated,
+                "webster": True,
+            }
+            self.assertEqual(self.agent.build_control_params(self.plan, coordinated), expected)
+
+    def test_rollout_deploys_exactly_the_built_params(self):
+        """The bytes handed to the simulator must equal the helper's output, not a copy."""
+
+        captured: list = []
+
+        class _CapturingSandbox:
+            def run_simulation(self, scheme="baseline", duration=600, incident_start=150,
+                               incident_end=420, control_params=None, seed=None):
+                captured.append((scheme, control_params, seed))
+                return {
+                    "vehicle_delays": [10.0] * 20,
+                    "queue_lengths": [0.0] * 20,
+                    "vehicle_speeds": [10.0] * 20,
+                    "total_co2_mg": 1000.0,
+                    "total_fuel_mg": 400.0,
+                    "completed_trips": 2000,
+                    "simulation_duration": duration,
+                }
+
+        self.agent.sandbox = _CapturingSandbox()
+        self.agent.execute_what_if_rollout(
+            duration=300, incident_start=75, incident_end=210,
+            diagnosis=DIAGNOSIS, seed=42,
+        )
+        deployed = {scheme: ctl for scheme, ctl, _ in captured}
+
+        self.assertEqual(
+            deployed["webster"],
+            self.agent.build_control_params(self.plan, False, use_rerouting=False),
+        )
+        self.assertEqual(
+            deployed["agent_dss"],
+            self.agent.build_control_params(self.plan, True, use_rerouting=True),
+        )
+        self.assertTrue(all(seed == 42 for _, _, seed in captured))
 
 
 class TestDiversionOverride(unittest.TestCase):

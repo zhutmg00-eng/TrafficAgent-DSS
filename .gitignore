@@ -63,6 +63,9 @@ ORIGINAL_REQUEST.md
 # 消融实验的原始逐种子数据（可由 experiments/ablation.py 重新生成）；
 # 汇总用的 ablation_result_*.md 作为样例证据保留入库
 experiments/ablation_raw_*.json
+# 闭环增益实验的原始逐种子数据与逐次运行日志（可由 experiments/closed_loop_gain.py 重新生成）；
+# 汇总用的 closed_loop_gain_*.md 保留入库
+experiments/closed_loop_gain_raw_*.json
 
 # Pytest & Test Artifacts
 .pytest_cache/

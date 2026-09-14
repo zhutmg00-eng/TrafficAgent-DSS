@@ -460,6 +460,37 @@ class TrafficDecisionAgent:
             },
         }
 
+    def build_control_params(
+        self,
+        plan: Dict[str, Any],
+        coordinated: bool,
+        use_rerouting: bool = True,
+        use_webster: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Turns a tool plan into the control-parameter dict the SUMO sandbox consumes.
+
+        Single source of truth for "what actually gets deployed". It used to be written
+        out by hand in three places (strategy A, strategy B, and the closed loop) which
+        made it possible for the simulated control to drift away from the planned one
+        without any test noticing. Behaviour is unchanged: `coordinated=False` deploys the
+        single-point program (every junction starting at phase 0), `coordinated=True`
+        deploys the green-wave-aligned program, and `use_rerouting=False` deploys a zero
+        diversion ratio regardless of what the plan computed.
+        """
+        program = dict(
+            plan["signal_program"],
+            first_green_start=(
+                list(plan["green_wave"]["offsets"]) if coordinated else [0.0, 0.0, 0.0]
+            ),
+        )
+        return {
+            "signal_program": program,
+            "reroute_ratio": plan["reroute"]["diversion_ratio"] if use_rerouting else 0.0,
+            "green_wave": coordinated,
+            "webster": use_webster,
+        }
+
     # ------------------------------------------------------------------ #
     # 1. Diagnosis
     # ------------------------------------------------------------------ #
@@ -1030,8 +1061,6 @@ class TrafficDecisionAgent:
                 raise ValueError(f"Invalid random seed: {seed} ({err})")
 
         plan = self._tool_plan(diagnosis, policy=policy)
-        gw_plan = plan["green_wave"]
-        reroute_ratio = plan["reroute"]["diversion_ratio"] if use_rerouting else 0.0
 
         # A valid policy may also decide *whether* to coordinate; when it is silent
         # the caller's switch governs, exactly as before.
@@ -1040,14 +1069,10 @@ class TrafficDecisionAgent:
             policy_coordinated = policy["coordinated"]
         green_wave_active = use_green_wave if policy_coordinated is None else policy_coordinated
 
-        # Signal programs deployed (once) by the simulator for the two actuated strategies.
-        # Both use the same Webster timing aligned with the network's two release phases;
-        # the coordinated plan additionally aligns each junction's cycle to the green-wave
-        # offset, while the single-point plan starts every junction at phase 0.
-        program_uncoordinated = dict(plan["signal_program"], first_green_start=[0.0, 0.0, 0.0])
-        program_coordinated = dict(
-            plan["signal_program"], first_green_start=list(gw_plan["offsets"])
-        )
+        # The signal program actually deployed (single-point, i.e. every junction starting
+        # at phase 0, or green-wave-aligned) is produced by `build_control_params` — the
+        # single source of truth shared with the closed-loop optimiser. Both use the same
+        # Webster timing aligned with the network's two release phases.
 
         # Probe the sandbox signature ONCE rather than catching TypeError as control flow.
         # The previous `try: ... except TypeError: <rerun without seed>` pattern could not
@@ -1085,12 +1110,7 @@ class TrafficDecisionAgent:
         print("[Agent] Rolling out Strategy A (Webster Adaptive)...")
         res_a = _run_sandbox(
             "webster",
-            {
-                "signal_program": program_uncoordinated,
-                "reroute_ratio": 0.0,
-                "green_wave": False,
-                "webster": use_webster,
-            },
+            self.build_control_params(plan, False, use_rerouting=False, use_webster=use_webster),
         )
         kpi_a = self.evaluator.compute_summary_kpi(res_a)
         comp_a = self.evaluator.compare_schemes(kpi_base, kpi_a)
@@ -1099,14 +1119,7 @@ class TrafficDecisionAgent:
         print("[Agent] Rolling out Strategy B (Coordinated Agent-DSS)...")
         res_b = _run_sandbox(
             "agent_dss",
-            {
-                "signal_program": (
-                    program_coordinated if green_wave_active else program_uncoordinated
-                ),
-                "reroute_ratio": reroute_ratio,
-                "green_wave": green_wave_active,
-                "webster": use_webster,
-            },
+            self.build_control_params(plan, green_wave_active, use_rerouting=use_rerouting, use_webster=use_webster),
         )
         kpi_b = self.evaluator.compute_summary_kpi(res_b)
         comp_b = self.evaluator.compare_schemes(kpi_base, kpi_b)
@@ -1328,18 +1341,9 @@ class TrafficDecisionAgent:
             return self.sandbox.run_simulation(**kwargs)
 
         def _controls_from_plan(plan: Dict[str, Any], coordinated: bool) -> Dict[str, Any]:
-            program = dict(
-                plan["signal_program"],
-                first_green_start=(
-                    list(plan["green_wave"]["offsets"]) if coordinated else [0.0, 0.0, 0.0]
-                ),
+            return self.build_control_params(
+                plan, coordinated, use_rerouting=use_rerouting, use_webster=use_webster
             )
-            return {
-                "signal_program": program,
-                "reroute_ratio": plan["reroute"]["diversion_ratio"] if use_rerouting else 0.0,
-                "green_wave": coordinated,
-                "webster": use_webster,
-            }
 
         print("[Agent] Closed-loop 1/3: baseline (do-nothing) rollout...")
         base_kpi = self.evaluator.compute_summary_kpi(
