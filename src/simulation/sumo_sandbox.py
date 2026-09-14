@@ -594,7 +594,7 @@ class SumoSimulationSandbox:
             "vehicle_speeds": [s / 3.6 for s in bottleneck_speeds],  # in m/s for evaluator
             "bottleneck_speeds_kmh": bottleneck_speeds,
             "vehicle_delays": network_delays,
-            "delay_metric": "mean_vehicle_time_loss_s_per_veh (SUMO tripinfo `timeLoss` definition)",
+            "delay_metric": "active_vehicle_cumulative_time_loss_sample_mean_s (5s samples; not final per-trip mean)",
             "completed_trips": completed_vehicles,
             "total_co2_mg": total_co2,
             "total_fuel_mg": total_fuel,

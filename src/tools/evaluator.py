@@ -12,7 +12,7 @@ import numpy as np
 class PerformanceEvaluator:
     """
     Evaluates simulation performance across 5 key dimensions:
-      1. Travel Efficiency: Average Delay (s/veh)
+      1. Travel Efficiency: Average Delay (s/veh; source-specific aggregation)
       2. Spatial Congestion: Maximum Queue Length (m)
       3. Capacity Utilization: Network Bottleneck Throughput (veh/h)
       4. Service Reliability: Delay time-series variance (s^2)

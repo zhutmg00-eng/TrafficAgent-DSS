@@ -88,11 +88,10 @@
 - 影响：提交 payload 时触发 Pydantic 的 `incident_start < incident_end` 校验，返回 422；用户只能看到运行失败提示。
 - 建议：动态设置 start 的最大值为 `duration - 最小事故时长`，同步调整两个滑块，并在提交前统一校验 `0 <= start < end <= duration`。
 
-#### P1-7：SUMO 平均延误的统计口径不是逐车最终延误
+#### P1-7：SUMO 延误统计口径已明确，但仍非逐车最终延误
 
 - 证据：`src/simulation/sumo_sandbox.py:534-554` 每 5 秒对当前 active vehicles 调用累计 `getTimeLoss()`，再把样本序列交给 evaluator 求均值。
-- 影响：同一车辆在多个时刻被重复计入，已到达车辆被排除；该值不能直接解释为 `mean_vehicle_time_loss_s_per_veh`，会随到达率和停留时间产生偏置，影响策略比较与论文表述。
-- 建议：收集每车完成行程后的最终 `timeLoss`/tripinfo，再按车辆聚合；或将字段改名为“active-vehicle cumulative time-loss sample mean”，同步实验报告和 API 文档。
+- 状态：字段已改名为 `active_vehicle_cumulative_time_loss_sample_mean_s` 并明确“非逐车最终均值”；若用于正式论文，仍建议后续采集 tripinfo 后按完成车辆聚合。
 
 #### P1-8：推理型模型参数固定，可能直接失败并静默降级（已修复）
 
