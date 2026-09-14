@@ -217,14 +217,16 @@ uvicorn src.web.app:app --reload --port 8000
 系统现已原生支持**服务商模型自动识别与免重启热加载（ccSwitch 交互风格）**：
 - **Web 可视化大屏一键操作**：
   1. 访问决策大屏顶部导航栏，点击 **`⚙️ 模型配置`** 按钮唤起配置弹窗；
-  2. 填入 **API Base URL**（如内置标签快捷填入：`https://api.deepseek.com/v1`、`https://api.siliconflow.cn/v1`、`https://api.openai.com/v1` 或本地 `http://localhost:11434/v1`）；
-  3. 输入 **API Key**（支持明文/密文安全切换）；
+  2. 填入 **API Base URL**（仅支持公网 HTTPS 服务商端点，如 `https://api.deepseek.com/v1`、`https://api.siliconflow.cn/v1` 或 `https://api.openai.com/v1`；本地/私网地址会被安全策略拒绝）；
+  3. 输入服务管理员提供的 **管理令牌** 和 **API Key**（令牌只用于本次管理操作，不写入浏览器存储）；
   4. 点击 **`🔍 自动识别可用模型 (Auto-detect Models)`**，系统将自动连通服务商 `/v1/models` 端点探测其支持的全部可用模型（并智能优先将 Chat 与 Reasoning 模型排在前列）；
   5. 在下拉选单中选择目标模型（如 `deepseek-chat`、`deepseek-reasoner`、`gpt-4o`、`qwen2.5`），点击 **`💾 保存并立即生效`** 即可在内存中实时热更新智能体大脑，无需重启 Python/FastAPI 后台服务！
 - **RESTful API 自动化集成**：
   - `POST /api/llm/detect-models`：传入 `{ "base_url": "...", "api_key": "..." }`，自动返回服务商支持的全部模型 ID 列表与推荐模型；
   - `GET /api/llm/config`：读取当前大模型连接状态、已生效模型及脱敏密钥；
   - `POST /api/llm/config`：通过脚本或第三方调度系统动态热切换当前使用的模型与凭据。
+
+> 模型探测与热切换接口要求 `Authorization: Bearer <TRAFFIC_ADMIN_TOKEN>`。启动前请在 `.env` 设置随机的 `TRAFFIC_ADMIN_TOKEN`；未设置令牌时，这两个管理操作会被关闭。跨域调用默认关闭，只有 `TRAFFIC_ALLOWED_ORIGINS` 中显式列出的来源才会获得 CORS 权限。
 
 #### 2. 传统静态环境变量配置（可选）
 
