@@ -4,7 +4,7 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![CI-Build](https://github.com/zhutmg00-eng/TrafficAgent-DSS/actions/workflows/ci.yml/badge.svg)](https://github.com/zhutmg00-eng/TrafficAgent-DSS/actions)
 [![Simulation-SUMO](https://img.shields.io/badge/Simulation-SUMO%20%2F%20TraCI-brightgreen.svg)](https://eclipse.dev/sumo/)
-[![Tests-174%20Passed](https://img.shields.io/badge/Tests-174%20Passed%20(160%20Core%20%2B%2014%20E2E)-success.svg)](tests/)
+[![Tests-174%20Passed](https://img.shields.io/badge/Tests-183%20Passed%20(169%20Core%20%2B%2014%20E2E)-success.svg)](tests/)
 [![E2E-Playwright](https://img.shields.io/badge/E2E-Microsoft%20Playwright-blueviolet.svg)](https://playwright.dev/)
 [![Architecture-LLM%20Agent](https://img.shields.io/badge/Architecture-Single%20Agent%20%2B%20Deterministic%20Toolchain-orange.svg)](https://github.com/zhutmg00-eng/TrafficAgent-DSS)
 [![Baidu Map-LBS WebGL](https://img.shields.io/badge/Baidu%20Map-LBS%20WebGL-blue.svg)](https://lbsyun.baidu.com/)
@@ -154,12 +154,12 @@ TrafficAgent-DSS/
 │   ├── corridor.net.xml                   # 典型双通道干线路网拓扑
 │   ├── corridor.rou.xml                   # 高峰潮汐与突发事故交通需求
 │   └── corridor.sumocfg                   # SUMO 仿真配置文件
-├── tests/                                 # 自动化测试套件（160 项单元/集成测试 + 14 项 E2E）
+├── tests/                                 # 自动化测试套件（169 项单元/集成测试 + 14 项 E2E）
 │   ├── test_system.py                     # 交通工程算法、真实绿波与智能体推理单元测试 (46 项)
 │   ├── test_web_api.py                    # RESTful Web API、百度LBS与路由集成测试 (33 项)
 │   ├── test_network_mesoscopic.py         # 真实路网与中观仿真引擎专项测试 (10 项)
 │   ├── test_empirical_challenger_2.py     # 极限边界与鲁棒性挑战压力测试 (24 项)
-│   ├── test_llm_decision.py               # 大模型决策层：Schema校验/约束裁剪/闭环寻优 (47 项)
+│   ├── test_llm_decision.py               # 大模型决策层：Schema校验/约束裁剪/闭环寻优 (56 项)
 │   └── e2e/                               # Playwright 浏览器端到端前端测试套件 (14 项)
 │       ├── conftest.py                    # 独立 FastAPI 后台测试服务 Fixture
 │       ├── test_core_ui.py                # 大屏基础渲染、主题切换与全景截图 (3 项)
@@ -181,12 +181,13 @@ TrafficAgent-DSS/
 - [x] **Step 2: 搭建基础路网与 SUMO 仿真沙盒**（已完成：`scenarios/` 走廊路网 + TraCI 沙盒，支持事故注入与限速还原）
 - [x] **Step 3: 核心智能体推理引擎与工具库开发**（已完成：大模型归因 + Webster/绿波/动态诱导工具库 + 诊断→策略→推演闭环）
 - [x] **Step 4: Web 决策大屏原型搭建**（已完成：FastAPI + 单页大屏，含方案下发与 A/B 效果对比图表）
-- [x] **Step 5: 端到端仿真复验与系统级鲁棒性加固**（已完成：SUMO 真实物理推演跑通，"协同 > 单点 > 基线"因果链闭环；全系统边界缺陷治理完成；实现多种子批量实验与 95% 置信区间统计评估；**160 项单元测试与 GitHub Actions CI 100% 稳定通过**）
+- [x] **Step 5: 端到端仿真复验与系统级鲁棒性加固**（已完成：SUMO 真实物理推演跑通，"协同 > 单点 > 基线"因果链闭环；全系统边界缺陷治理完成；实现多种子批量实验与 95% 置信区间统计评估；**169 项单元测试与 GitHub Actions CI 100% 稳定通过**）
 - [x] **Step 5.5: 大模型进入决策回路 + 参赛文实对齐**（已完成 v2.2.4 / v2.3.0：README 数字与实测报告逐项对齐；大模型由「只写文案」升级为「输出可下发控制参数」，配 Schema 校验、物理约束裁剪、数值溯源守卫与闭环迭代，详见 §9.3）
+- [x] **Step 5.6: 闭环增益标定实测 + 采纳规则修复**（已完成 v2.3.1 / v2.3.2：标定工况 600s / 事故窗口 150–420s × 7 个留出种子的同种子配对复验；结论是"控制显著优于无干预，但尚未超过现有规则链"；并修复排队约束标尺导致的闭环空转，详见 §9.3 与 [`experiments/closed_loop_gain_v2.md`](experiments/closed_loop_gain_v2.md)）
 - [ ] **Step 6: 成果材料撰写与包装**（推进中：完成《作品申报书》、6页《作品说明书》小论文、录制演示视频与答辩PPT）
 
 > ✅ **系统验证与工程质量认证**（2026-09-14 最新）：
-> - **测试覆盖**：`pytest -q` 实测 **160 项通过**（原有 113 项 + 新增 47 项大模型决策层与闭环寻优），另 14 项 Playwright E2E 单独标记（`-m e2e`）运行；GitHub Actions CI 自动化流水线（Python 3.10 / 3.12）全部通过（绿灯）；
+> - **测试覆盖**：`pytest -q` 实测 **169 项通过**（原有 113 项 + 大模型决策层与闭环寻优 56 项），另 14 项 Playwright E2E 单独标记（`-m e2e`）运行；GitHub Actions CI 自动化流水线（Python 3.10 / 3.12）全部通过（绿灯）；
 > - **统计可靠性**：`POST /api/evaluate/multi-seed` 支持多随机种子并行推演，输出均值、标准误（SEM）与 95% 置信区间（CI）；**样本量不足（n<2）时不输出置信区间**，非物理模式如实声明样本特征，杜绝伪统计；
 > - **数据可信**：消融数据一律由 `experiments/ablation.py` 实测产出并随报告留档，README 引用的数值可由脚本复现（详见 §9.2 与 CHANGELOG 的 v2.2.4 文实对齐整改）；大模型输出的叙事与决策理由均受**数值溯源守卫**约束，引用了未经输入的数字会被**整份拒绝**；
 > - **系统健壮性**：涵盖 Webster 配时残差精准吸收、图解法公共交集真实绿波带宽计算、VMS 诱导防假触发与旁路 80% 熔断、SUMO 进程 5 秒僵尸超时清理及物理仿真缺失时的平滑高精度标定降级。完整更新记录详见 [`CHANGELOG.md`](CHANGELOG.md)。
@@ -334,7 +335,10 @@ uvicorn src.web.app:app --reload --port 8000
 **择优与裁决**：
 
 - 以**实测平均延误**为准择优，必须胜过现任最优才被采纳；
-- **排队劣化超过基线 25% 的轮次直接弃用** —— 不允许「拿排队换延误」；
+- **排队劣化超过参考规则链方案 25% 的轮次直接弃用** —— 不允许「拿排队换延误」。
+  参照物取**参考规则链方案**（同种子实测）而非无干预基线：后者的峰值排队在种子间波动
+  可达 5 倍（60 m ↔ 307.5 m），以它为分母会把包括规则链在内的**所有**候选一律拒掉
+  （v2.3.2 修复，详见 CHANGELOG）；
 - 若所有候选方案（含最优者）都不优于无干预基线，输出
   `do_nothing_is_better_under_measured_conditions` 并明确写「不建议下发控制指令」——
   **绝不把一个「相对最好」的方案包装成推荐方案**。
@@ -349,8 +353,29 @@ uvicorn src.web.app:app --reload --port 8000
 ② 第 2 轮 prompt 中确实携带了第 1 轮的**实测量化反馈**（闭环成立，非纸面功能）；
 ③ 无模型可用时如实降级为确定性规则链并标注 `decision_mode`，不迭代也不编造。
 
-> ⚠️ 该验证使用的 `duration=300s / 事故窗口 75–210s` 属**非标定短工况**，且为单种子单次运行，
-> 其数值**不构成任何性能结论**。标定工况（600s / 150–420s）与多种子条件下的闭环增益评估仍在进行中。
+**标定工况多种子增益实测（v2.3.1）** —— 完整报告见
+[`experiments/closed_loop_gain_v2.md`](experiments/closed_loop_gain_v2.md)，
+100+ 次真实 SUMO/TraCI 运行；调参种子（42/101/777）与留出种子（7 个）**不相交**，
+复验为**同种子配对** 95% t-CI：
+
+| 臂 | 平均延误 (s/veh) | 相对无干预基线（配对） | 相对规则链（配对） |
+|:--|:--|:--|:--|
+| 无干预基线 | 30.09 ± 4.44 | — | — |
+| 确定性规则链 | 24.10 ± 3.47 | +6.0（显著） | — |
+| 参数寻优 P\\*（周期 70s） | 25.24 ± 3.09 | **+4.84 [0.81, 8.88] 显著** | −1.14 [−6.94, 4.66] 不显著 |
+| 参数寻优 P2（周期 100s） | 20.96 ± 3.13 | **+9.13 [6.37, 11.88] 显著** | +3.14 [−1.03, 7.31] 不显著 |
+
+- ✅ **控制有效**：任何一条控制策略相对「什么都不做」都显著降延误；
+- ❌ **尚未超过现有规则链**：寻优所得相对规则链的点估计为正但 CI 跨 0，**未达统计显著**；
+- ⚠️ **调参最优不如次优**：3 个种子上选出的「最优」在留出种子上不如次优 ——
+  小样本调参必然过拟合种子噪声，**必须留存复验**。
+
+> ⚠️ 以上增益由**确定性坐标上升搜索器**在闭环中顶替大模型取得，用于评估"闭环机制"的上限；
+> **不能**据此声称"某个大模型能找到该策略"——那需要真实模型参与，属未完成项。
+> 早期 300s / 单种子的通路验证数值（§9.3 前文）**不构成任何性能结论**，仅证明闭环通路成立。
+
+> ✅ 自 v2.3.2 起，上述寻优结果可被闭环**真正采纳**（在线检查的 `best.source` 由
+> `deterministic_rule_chain` 变为 `llm_decision_layer`）；修复前该约束会把所有候选拒掉。
 
 ---
 
