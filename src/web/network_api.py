@@ -174,6 +174,7 @@ def run_mesoscopic_rollout(
     use_green_wave: bool = True,
     use_webster: bool = True,
     seed: Optional[int] = None,
+    scenario: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     net = get_network()
     sim = get_simulator()
@@ -197,8 +198,10 @@ def run_mesoscopic_rollout(
         control.update({"cycle_length": 112.0, "green_split_arterial": 84.0,
                         "reroute_ratio": 0.22 if use_rerouting else 0.0})
 
+    scenario = scenario or {}
     common = dict(duration=duration, incident_start=incident_start, incident_end=incident_end,
                   bottleneck_id=bottleneck["id"], seed=seed)
+    common["scenario"] = scenario
     res_base = sim.run_scheme("baseline", control={"webster": False, "green_wave": False,
                                                    "reroute_ratio": 0.0}, **common)
     res_a = sim.run_scheme("webster", control={"webster": True, "green_wave": False,

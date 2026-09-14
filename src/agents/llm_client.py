@@ -396,15 +396,21 @@ class LLMReasoningClient:
                 kwargs["base_url"] = self.base_url
 
             client = openai_cls(**kwargs)
-            response = client.chat.completions.create(
+            completion_args = dict(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=temperature,
-                max_tokens=max_tokens,
             )
+            # Reasoning families reject temperature and use completion-token budgets.
+            model_name = self.model.lower()
+            if any(tag in model_name for tag in ('reasoner', 'o1', 'o3', 'o4', 'thinking')):
+                completion_args['max_completion_tokens'] = max_tokens
+            else:
+                completion_args['temperature'] = temperature
+                completion_args['max_tokens'] = max_tokens
+            response = client.chat.completions.create(**completion_args)
 
             content = ""
             if getattr(response, "choices", None):

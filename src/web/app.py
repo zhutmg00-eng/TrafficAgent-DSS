@@ -154,6 +154,19 @@ class RolloutConfigInput(BaseModel):
         return self
 
 
+def _scenario_parameters(corridor: str, congestion: str) -> Dict[str, float]:
+    """Map UI scenario labels to explicit mesoscopic demand/capacity parameters."""
+    text = f"{corridor} {congestion}"
+    params = {"demand_multiplier": 1.25, "capacity_multiplier": 0.38}
+    if "西二环" in text or "快速路" in text:
+        params.update(demand_multiplier=1.35, capacity_multiplier=0.32)
+    if "施工" in text or "缩减" in text or "封道" in text:
+        params.update(demand_multiplier=1.45, capacity_multiplier=0.25)
+    elif "溢流" in text or "失衡" in text:
+        params.update(demand_multiplier=1.30, capacity_multiplier=0.45)
+    return params
+
+
 class MultiSeedEvaluationInput(BaseModel):
     seeds: Optional[List[int]] = Field(default=[42, 101, 2024, 777, 999], description="评估随机种子列表")
     duration: int = Field(default=600, ge=30, le=1800, description="单次推演时长 (秒)")
@@ -929,6 +942,7 @@ def _run_rollout(cfg: "RolloutConfigInput", state_dict: Optional[Dict[str, Any]]
     to the hard-coded corridor defaults (which made the brief internally inconsistent).
     """
     state = state_dict or TrafficStateInput().model_dump()
+    scenario = _scenario_parameters(cfg.corridor_choice, cfg.congestion_type)
 
     if not cfg.run_physical_sandbox:
         # Caller explicitly requested the non-physical fast path.
@@ -941,9 +955,15 @@ def _run_rollout(cfg: "RolloutConfigInput", state_dict: Optional[Dict[str, Any]]
                 use_green_wave=cfg.use_green_wave,
                 use_webster=cfg.use_webster,
                 seed=cfg.seed,
+                scenario=scenario,
             )
             result["degraded"] = True
             result["fallback_reason"] = "已选非微观仿真模式，运行真实路网中观排队物理推演引擎。"
+            result.setdefault("scenario", {}).update({
+                "requested_corridor_choice": cfg.corridor_choice,
+                "requested_congestion_type": cfg.congestion_type,
+                "parameters": scenario,
+            })
             return result
         except Exception as e:
             calibrated = get_calibrated_rollout_data(

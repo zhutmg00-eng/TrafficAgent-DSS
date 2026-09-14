@@ -101,9 +101,11 @@ class MesoscopicSimulator:
         seed: Optional[int] = None,
         bottleneck_id: Optional[str] = None,
         peak_window: Optional[List[float]] = None,
+        scenario: Optional[Dict[str, float]] = None,
         step: int = 10,
     ) -> Dict[str, Any]:
         control = control or {}
+        scenario = scenario or {}
         step = max(1, int(step))
         peak_start, peak_end = (peak_window or [100.0, max(160.0, duration * 0.85)])
 
@@ -170,8 +172,8 @@ class MesoscopicSimulator:
                 load *= self._centrality[eid]
 
                 if incident_on and eid == b_id:
-                    load *= 1.25                          # tidal peak concentration on the bottleneck
-                    cap *= 0.38                           # ~62% capacity loss (occupancy/blockage)
+                    load *= float(scenario.get("demand_multiplier", 1.25))
+                    cap *= float(scenario.get("capacity_multiplier", 0.38))
 
                 if reroute_on:
                     if eid == b_id or is_arterial:
