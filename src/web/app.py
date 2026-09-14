@@ -11,10 +11,11 @@ import json
 import shutil
 import threading
 import time
+import secrets
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Response, status
+from fastapi import FastAPI, HTTPException, Query, Response, status, Depends, Header
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -96,10 +97,11 @@ app = FastAPI(
 # Enable CORS for full decouple flexibility
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[origin.strip() for origin in os.getenv("TRAFFIC_ALLOWED_ORIGINS", "").split(",")
+                   if origin.strip() and origin.strip() != "*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 # Global Traffic Decision Agent
@@ -468,7 +470,15 @@ def get_system_status():
     }
 
 
-@app.post("/api/llm/detect-models", summary="自动识别与探测可用大模型列表 (ccSwitch 风格)")
+def require_admin(authorization: Optional[str] = Header(default=None)):
+    token = os.getenv("TRAFFIC_ADMIN_TOKEN", "").strip()
+    if not token:
+        raise HTTPException(503, "模型管理未启用，请由管理员配置管理令牌。")
+    if not secrets.compare_digest((authorization or "").encode(), f"Bearer {token}".encode()):
+        raise HTTPException(401, "管理令牌无效。", headers={"WWW-Authenticate": "Bearer"})
+
+
+@app.post("/api/llm/detect-models", dependencies=[Depends(require_admin)], summary="自动识别与探测可用大模型列表 (ccSwitch 风格)")
 def detect_llm_models(payload: Optional[LLMDetectModelsInput] = None):
     """
     Queries /v1/models endpoint from the provided or current base_url and api_key,
@@ -501,7 +511,7 @@ async def get_llm_config():
     }
 
 
-@app.post("/api/llm/config", summary="热更新并切换大模型配置")
+@app.post("/api/llm/config", dependencies=[Depends(require_admin)], summary="热更新并切换大模型配置")
 def update_llm_config(payload: LLMConfigInput):
     """
     Hot-updates API key, base URL, and active model for the running agent.
@@ -651,10 +661,9 @@ async def baidu_driving_route(payload: BaiduRouteInput):
             resp = await client.get(_BAIDU_DIRECTION_URL, params=params)
             resp.raise_for_status()
             body = resp.json()
-    except Exception as e:
+    except Exception:
         # Never echo provider exception text: httpx errors may include the full URL,
         # including the server-side Baidu AK query parameter.
-        _ = e
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="百度路径规划调用失败，请稍后重试。",

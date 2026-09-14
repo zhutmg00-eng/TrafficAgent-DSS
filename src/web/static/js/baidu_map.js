@@ -139,8 +139,8 @@
         : '';
       return '<div class="route-card" style="border-left:3px solid ' + color + ';">' +
         '<div class="route-card-head"><span class="route-badge" style="color:' + color + '">' + badge + '</span>' +
-        '<span class="route-km">' + r.distance_km + ' km · ' + r.duration_min + ' 分钟</span></div>' +
-        '<div class="route-card-sub">百度地图实时路径规划' + congText + '</div>' +
+        '<span class="route-km">' + escapeHtml(r.distance_km) + ' km · ' + escapeHtml(r.duration_min) + ' 分钟</span></div>' +
+        '<div class="route-card-sub">百度地图实时路径规划' + escapeHtml(congText) + '</div>' +
         '</div>';
     }).join('');
   }

@@ -44,7 +44,7 @@
     <div class="header-status">
       <div class="status-badge" id="sandboxStatusBadge">
         <span class="status-dot"></span>
-        <span>微观沙盒：就绪 (SUMO / TraCI)</span>
+        <span>微观沙盒：正在检查…</span>
       </div>
       <div class="status-badge" id="agentBrainStatusBadge">
         <span class="status-dot"></span>
@@ -581,6 +581,8 @@
       </div>
       <div class="modal-body">
         <div class="form-group">
+          <label class="form-label" for="llmAdminTokenInput">管理令牌</label>
+          <input type="password" class="form-input" id="llmAdminTokenInput" autocomplete="off" placeholder="由服务管理员提供，用于保存配置和探测模型">
           <label class="form-label" for="llmBaseUrlInput">API Base URL (OpenAI 兼容端点)</label>
           <input type="text" class="form-input" id="llmBaseUrlInput" placeholder="https://api.deepseek.com/v1">
           <div class="quick-providers">

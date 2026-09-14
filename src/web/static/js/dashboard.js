@@ -159,11 +159,26 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindEventHandlers();
   const sandboxToggle = document.getElementById('toggleSandbox');
   if (sandboxToggle) state.runPhysicalSandbox = sandboxToggle.checked;
+  refreshSystemStatus();
   await loadInitialData();
   window.addEventListener('resize', handleResize);
 });
 
 // Theme Management
+async function refreshSystemStatus() {
+  const label = document.querySelector('#sandboxStatusBadge span:last-child');
+  try {
+    const response = await fetch('/api/status');
+    if (!response.ok) throw new Error('status unavailable');
+    const data = await response.json();
+    if (label) label.textContent = data.simulation_engine?.binary_exists
+      ? '微观沙盒：可用 (SUMO / TraCI)'
+      : '微观沙盒：不可用，将使用中观推演';
+  } catch (_) {
+    if (label) label.textContent = '微观沙盒：状态检查失败';
+  }
+}
+
 function initTheme() {
   document.documentElement.setAttribute('data-theme', state.theme);
   updateThemeIcon();
@@ -1232,8 +1247,10 @@ function renderRoadNetwork() {
   // Use map_snapshot for strategy view if available
   let renderEdges = edges;
   let renderLive = live;
-  if (mapViewState === 'strategy' && data.map_snapshot) {
-    const snapshot = data.map_snapshot.strategy_b || data.map_snapshot.strategy_a;
+  if (data.map_snapshot) {
+    const snapshot = mapViewState === 'strategy'
+      ? data.map_snapshot.strategy_b
+      : data.map_snapshot.baseline;
     // Snapshots contain per-edge metrics only; geometry remains the network geometry.
     renderEdges = edges;
     renderLive = snapshot || live;
@@ -1318,7 +1335,7 @@ function renderRoadNetwork() {
       }
 
       const d = `M ${coords}`;
-      svgContent += `<polyline class="${cls}" d="${d}" stroke="${color}" stroke-width="${width}" style="${style}" stroke-opacity="${isBottleneck ? 1 : 0.85}" data-edge-id="${e.id}" data-edge-name="${e.name || ''}" data-edge-speed="${renderLive?.[e.id]?.speed_kmh ?? e.speed_kmh ?? ''}" data-edge-queue="${renderLive?.[e.id]?.queue_m ?? ''}" data-edge-occupancy="${renderLive?.[e.id]?.occupancy ?? ''}" data-edge-flow="${renderLive?.[e.id]?.flow_vph ?? ''}" data-edge-level="${level}"/>
+      svgContent += `<polyline class="${cls}" d="${d}" stroke="${color}" stroke-width="${width}" style="${style}" stroke-opacity="${isBottleneck ? 1 : 0.85}" data-edge-id="${escapeHtml(e.id)}" data-edge-name="${escapeHtml(e.name || '')}" data-edge-speed="${escapeHtml(renderLive?.[e.id]?.speed_kmh ?? e.speed_kmh ?? '')}" data-edge-queue="${escapeHtml(renderLive?.[e.id]?.queue_m ?? '')}" data-edge-occupancy="${escapeHtml(renderLive?.[e.id]?.occupancy ?? '')}" data-edge-flow="${escapeHtml(renderLive?.[e.id]?.flow_vph ?? '')}" data-edge-level="${escapeHtml(level)}"/>
 `;
 
       // Bottleneck label
@@ -1326,7 +1343,7 @@ function renderRoadNetwork() {
         const midIdx = Math.floor(geom.length / 2);
         const lx = toSvgX(geom[midIdx][0]);
         const ly = toSvgY(geom[midIdx][1]);
-        svgContent += `<text x="${lx}" y="${ly - 10}" fill="#dc2626" font-size="12" font-weight="700" text-anchor="middle">瓶颈: <tspan fill="#fff">${bottleneck_name || ''}</tspan></text>`;
+        svgContent += `<text x="${lx}" y="${ly - 10}" fill="#dc2626" font-size="12" font-weight="700" text-anchor="middle">瓶颈: <tspan fill="#fff">${escapeHtml(bottleneck_name || '')}</tspan></text>`;
       }
     });
   }
@@ -1354,12 +1371,12 @@ function attachMapEdgeEvents(svg, liveData, edgeData, bottleneckName) {
     el.addEventListener('mouseenter', (e) => {
       const levelLabel = { free: '畅通', moderate: '轻度拥堵', congested: '中度拥堵', severe: '严重拥堵', unknown: '未知' };
       tooltip.innerHTML = `
-        <div class="tt-name">${edgeName}</div>
-        <div class="tt-row"><span class="tt-label">拥堵等级</span><span class="tt-val">${levelLabel[level] || level}</span></div>
-        ${speed ? `<div class="tt-row"><span class="tt-label">车速</span><span class="tt-val">${speed} km/h</span></div>` : ''}
-        ${queue ? `<div class="tt-row"><span class="tt-label">排队</span><span class="tt-val">${queue} m</span></div>` : ''}
+        <div class="tt-name">${escapeHtml(edgeName)}</div>
+        <div class="tt-row"><span class="tt-label">拥堵等级</span><span class="tt-val">${escapeHtml(levelLabel[level] || level)}</span></div>
+        ${speed ? `<div class="tt-row"><span class="tt-label">车速</span><span class="tt-val">${escapeHtml(speed)} km/h</span></div>` : ''}
+        ${queue ? `<div class="tt-row"><span class="tt-label">排队</span><span class="tt-val">${escapeHtml(queue)} m</span></div>` : ''}
         ${occupancy ? `<div class="tt-row"><span class="tt-label">占有率</span><span class="tt-val">${Math.round(occupancy * 100)}%</span></div>` : ''}
-        ${flow ? `<div class="tt-row"><span class="tt-label">流量</span><span class="tt-val">${flow} veh/h</span></div>` : ''}
+        ${flow ? `<div class="tt-row"><span class="tt-label">流量</span><span class="tt-val">${escapeHtml(flow)} veh/h</span></div>` : ''}
       `;
       tooltip.classList.add('visible');
     });
@@ -1385,12 +1402,12 @@ function attachMapEdgeEvents(svg, liveData, edgeData, bottleneckName) {
       if (sb) {
         const levelLabel = { free: '畅通', moderate: '轻度拥堵', congested: '中度拥堵', severe: '严重拥堵', unknown: '未知' };
         sb.innerHTML = `
-          <div style="margin-bottom:10px;"><span class="det-key">路段:</span> <span class="det-val">${edgeName}</span></div>
-          <div style="margin-bottom:6px;"><span class="det-key">拥堵等级:</span> <span class="det-val">${levelLabel[level] || level}</span></div>
-          ${speed ? `<div style="margin-bottom:6px;"><span class="det-key">车速:</span> <span class="det-val">${speed} km/h</span></div>` : ''}
-          ${queue ? `<div style="margin-bottom:6px;"><span class="det-key">排队长度:</span> <span class="det-val">${queue} m</span></div>` : ''}
+          <div style="margin-bottom:10px;"><span class="det-key">路段:</span> <span class="det-val">${escapeHtml(edgeName)}</span></div>
+          <div style="margin-bottom:6px;"><span class="det-key">拥堵等级:</span> <span class="det-val">${escapeHtml(levelLabel[level] || level)}</span></div>
+          ${speed ? `<div style="margin-bottom:6px;"><span class="det-key">车速:</span> <span class="det-val">${escapeHtml(speed)} km/h</span></div>` : ''}
+          ${queue ? `<div style="margin-bottom:6px;"><span class="det-key">排队长度:</span> <span class="det-val">${escapeHtml(queue)} m</span></div>` : ''}
           ${occupancy ? `<div style="margin-bottom:6px;"><span class="det-key">占有率:</span> <span class="det-val">${Math.round(occupancy * 100)}%</span></div>` : ''}
-          ${flow ? `<div style="margin-bottom:6px;"><span class="det-key">流量:</span> <span class="det-val">${flow} veh/h</span></div>` : ''}
+          ${flow ? `<div style="margin-bottom:6px;"><span class="det-key">流量:</span> <span class="det-val">${escapeHtml(flow)} veh/h</span></div>` : ''}
         `;
       }
     });
@@ -1454,7 +1471,7 @@ function renderActionChecklist(data) {
 
   // Render plain summary
   if (data.plain_summary) {
-    summaryEl.innerHTML = `<strong>📌 行动概要：</strong>${data.plain_summary}`;
+    summaryEl.innerHTML = `<strong>📌 行动概要：</strong>${escapeHtml(data.plain_summary)}`;
     summaryEl.style.display = 'block';
   } else {
     summaryEl.style.display = 'none';
@@ -1468,19 +1485,19 @@ function renderActionChecklist(data) {
   }
 
   stepsEl.innerHTML = steps.map(s => {
-    const phase = s.phase ?? 0;
+    const phase = Math.min(7, Math.max(0, steps.indexOf(s)));
     return `
       <div class="action-step-card phase-${phase}">
         <div class="action-step-header">
-          <span class="action-step-num">${s.n ?? (steps.indexOf(s) + 1)}</span>
-          <span class="action-step-title">${s.title || '未命名行动'}</span>
+          <span class="action-step-num">${escapeHtml(s.n ?? (steps.indexOf(s) + 1))}</span>
+          <span class="action-step-title">${escapeHtml(s.title || '未命名行动')}</span>
         </div>
         <div class="action-step-detail">
-          ${s.action ? `<div class="action-detail-item"><span class="action-detail-label">行动内容</span><span class="action-detail-value">${s.action}</span></div>` : ''}
-          ${s.where ? `<div class="action-detail-item"><span class="action-detail-label">📍 位置</span><span class="action-detail-value">${s.where}</span></div>` : ''}
-          ${s.when ? `<div class="action-detail-item"><span class="action-detail-label">⏰ 时机</span><span class="action-detail-value">${s.when}</span></div>` : ''}
-          ${s.expected ? `<div class="action-detail-item"><span class="action-detail-label">🎯 预期效果</span><span class="action-detail-value">${s.expected}</span></div>` : ''}
-          ${s.owner ? `<div class="action-detail-item"><span class="action-detail-label">👤 责任</span><span class="action-detail-value">${s.owner}</span></div>` : ''}
+          ${s.action ? `<div class="action-detail-item"><span class="action-detail-label">行动内容</span><span class="action-detail-value">${escapeHtml(s.action)}</span></div>` : ''}
+          ${s.where ? `<div class="action-detail-item"><span class="action-detail-label">📍 位置</span><span class="action-detail-value">${escapeHtml(s.where)}</span></div>` : ''}
+          ${s.when ? `<div class="action-detail-item"><span class="action-detail-label">⏰ 时机</span><span class="action-detail-value">${escapeHtml(s.when)}</span></div>` : ''}
+          ${s.expected ? `<div class="action-detail-item"><span class="action-detail-label">🎯 预期效果</span><span class="action-detail-value">${escapeHtml(s.expected)}</span></div>` : ''}
+          ${s.owner ? `<div class="action-detail-item"><span class="action-detail-label">👤 责任</span><span class="action-detail-value">${escapeHtml(s.owner)}</span></div>` : ''}
           ${s.verified !== undefined ? `<div class="action-detail-item"><span class="action-detail-label">✅ 验证</span><span class="action-detail-value">${s.verified ? '已验证' : '待验证'}</span></div>` : ''}
         </div>
       </div>
@@ -1519,16 +1536,16 @@ function renderDetectorTable(detectors, engine) {
     const levelLabel = { free: '畅通', moderate: '轻度拥堵', congested: '中度拥堵', severe: '严重拥堵', unknown: '未知' };
     return `
       <tr>
-        <td><span class="detector-level-chip level-${level}"><span class="level-dot"></span>${levelLabel[level] || level}</span></td>
-        <td>${d.edge_id || '-'}</td>
-        <td>${d.name || '-'}</td>
-        <td>${d.highway || '-'}</td>
-        <td>${d.peak_queue_m != null ? d.peak_queue_m : '-'}</td>
-        <td>${d.avg_speed_kmh != null ? d.avg_speed_kmh : '-'}</td>
-        <td>${d.min_speed_kmh != null ? d.min_speed_kmh : '-'}</td>
-        <td>${d.peak_flow_vph != null ? d.peak_flow_vph : '-'}</td>
+        <td><span class="detector-level-chip level-${escapeHtml(level)}"><span class="level-dot"></span>${escapeHtml(levelLabel[level] || level)}</span></td>
+        <td>${escapeHtml(d.edge_id || '-')}</td>
+        <td>${escapeHtml(d.name || '-')}</td>
+        <td>${escapeHtml(d.highway || '-')}</td>
+        <td>${escapeHtml(d.peak_queue_m != null ? d.peak_queue_m : '-')}</td>
+        <td>${escapeHtml(d.avg_speed_kmh != null ? d.avg_speed_kmh : '-')}</td>
+        <td>${escapeHtml(d.min_speed_kmh != null ? d.min_speed_kmh : '-')}</td>
+        <td>${escapeHtml(d.peak_flow_vph != null ? d.peak_flow_vph : '-')}</td>
         <td>${d.peak_occupancy != null ? Math.round(d.peak_occupancy * 100) + '%' : '-'}</td>
-        <td>${d.avg_delay_s != null ? d.avg_delay_s : '-'}</td>
+        <td>${escapeHtml(d.avg_delay_s != null ? d.avg_delay_s : '-')}</td>
       </tr>
     `;
   }).join('');
@@ -1749,7 +1766,7 @@ function initLlmModal() {
       try {
         const res = await fetch('/api/llm/detect-models', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (document.getElementById('llmAdminTokenInput')?.value || '') },
           body: JSON.stringify({ base_url, api_key })
         });
 
@@ -1809,7 +1826,7 @@ function initLlmModal() {
       try {
         const res = await fetch('/api/llm/config', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (document.getElementById('llmAdminTokenInput')?.value || '') },
           body: JSON.stringify({ base_url, api_key, model })
         });
 
