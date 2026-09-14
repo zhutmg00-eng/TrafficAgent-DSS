@@ -5,6 +5,7 @@ Validates all FastAPI routes, request-response validation, and static serving.
 
 import sys
 import unittest
+import math
 from unittest.mock import patch
 from pathlib import Path
 from fastapi.testclient import TestClient
