@@ -12,7 +12,29 @@ OpenAI-compatible chat client wrapper with explicit, auditable degradation.
 import json
 import os
 import re
+import ipaddress
+import socket
+from urllib.parse import urlsplit
 from typing import Any, Dict, List, Optional, Tuple
+
+
+def validate_public_endpoint(url: str) -> None:
+    """Reject unsafe endpoint syntax and non-public DNS results before outbound I/O.
+
+    Deployments must also enforce an egress firewall; this preflight alone does not
+    pin the address used by an SDK's subsequent DNS lookup.
+    """
+    try:
+        parsed = urlsplit(url)
+        if (parsed.scheme != 'https' or not parsed.hostname or parsed.username
+                or parsed.password or parsed.fragment or parsed.query
+                or parsed.port not in (None, 443)):
+            raise ValueError('Endpoint must be an HTTPS URL on port 443 without credentials or query parameters.')
+        addresses = socket.getaddrinfo(parsed.hostname, 443, type=socket.SOCK_STREAM)
+        if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
+            raise ValueError('Endpoint must resolve only to public IP addresses.')
+    except (OSError, ValueError) as exc:
+        raise ValueError('LLM endpoint rejected: use a public HTTPS provider endpoint.') from exc
 
 
 def _load_dotenv_if_available() -> None:
@@ -211,6 +233,11 @@ class LLMReasoningClient:
         if not url:
             url = "https://api.openai.com/v1"
 
+        try:
+            validate_public_endpoint(url)
+        except ValueError as exc:
+            return [], str(exc)
+
         # Track 1: Try OpenAI official SDK if available and key is present
         openai_cls = cls._sdk()
         if openai_cls is not None and key:
@@ -363,6 +390,7 @@ class LLMReasoningClient:
             return None, self.MODE_SDK_MISSING, self.last_error
 
         try:
+            validate_public_endpoint(self.base_url or 'https://api.openai.com/v1')
             kwargs: Dict[str, Any] = {"api_key": self.api_key, "timeout": self.timeout}
             if self.base_url:
                 kwargs["base_url"] = self.base_url
