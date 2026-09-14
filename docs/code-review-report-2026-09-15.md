@@ -31,47 +31,43 @@
 
 ### P0：上线或对外演示前必须处理
 
-#### P0-1：LLM 配置/模型探测未鉴权，并允许 SSRF 与服务端密钥外发
+#### P0-1：LLM 配置/模型探测未鉴权，并允许 SSRF 与服务端密钥外发（已修复）
 
 - 证据：`src/web/app.py:471-518` 的 `/api/llm/detect-models`、`/api/llm/config`；`src/agents/llm_client.py:209-257` 直接拼接并请求传入的 `base_url`。
 - 现场验证：传入 `http://127.0.0.1:9` 后端返回连接失败，说明请求从服务端发出，而不是仅在浏览器校验。
-- 影响：攻击者可探测内网服务、访问云元数据或内部管理端点；随后 `/api/diagnose`、`/api/strategies` 等可能把服务端保存的 API key 发送到攻击者控制的兼容端点。配置端点还允许任意调用方热写运行中的模型配置。
-- 建议：配置与探测接口置于认证后的管理面；只允许预置 provider/host 白名单；拒绝 loopback、私有、link-local、保留地址和非 HTTP(S) scheme；解析 DNS 后再次校验目标地址并防 DNS rebinding；限制端口、超时、响应体大小，并禁止把用户 URL 作为任意出站目的地。
+- 状态：接口已要求 `TRAFFIC_ADMIN_TOKEN`；LLM 端点已限制为公网 HTTPS 443，并拒绝私网、回环、链路本地和保留地址。
 
-#### P0-2：CORS 使用通配来源并开启 credentials
+#### P0-2：CORS 使用通配来源并开启 credentials（已修复）
 
 - 证据：`src/web/app.py:96-103`：`allow_origins=["*"]`、`allow_credentials=True`、方法和请求头全开放。
 - 现场验证：任意 Origin 的预检响应会回显该 Origin 并允许凭据。
-- 影响：和 P0-1 的无鉴权配置接口叠加后，任意网站都可尝试跨域操纵本服务；也不符合最小权限原则。
-- 建议：通过环境变量配置明确的前端 Origin 白名单；开发、本地和生产分别配置；管理接口单独加认证和 CSRF 防护，不依赖 CORS 作为访问控制。
+- 状态：默认同源且关闭 credentials；跨域来源必须由 `TRAFFIC_ALLOWED_ORIGINS` 显式列出。
 
-#### P0-3：百度服务端 AK 可能通过异常详情泄露
+#### P0-3：百度服务端 AK 可能通过异常详情泄露（已修复）
 
 - 证据：`src/web/app.py:642-658` 将 `BAIDU_MAP_SERVER_AK` 放入 query 参数，并在 `resp.raise_for_status()` 异常时把 `str(e)` 放入 `HTTPException.detail`。
-- 影响：httpx 的异常字符串包含完整请求 URL，非 2xx 响应可能把 `ak=...` 返回给调用方或前端；服务端日志也可能记录同一 URL。
-- 建议：对外只返回固定错误类别和 request id；日志记录采用密钥脱敏后的 URL；不要把第三方异常原文直接放进 API 响应。
+- 状态：接口现在只返回固定错误提示，不回显第三方异常原文或请求 URL。
 
 ### P1：发布前应修复的安全与行为一致性问题
 
-#### P1-1：前端多处 HTML 注入/XSS sink
+#### P1-1：前端多处 HTML 注入/XSS sink（已修复）
 
 - 证据：`src/web/static/js/dashboard.js:416-422` 直接渲染 `cot_reasoning`；`996-1094` 的 Markdown 解析器未先 HTML escape；`1161-1164` 的 toast、`1328-1365` 的地图 tooltip/侧栏、`1428-1455` 的行动清单均直接拼接后端文本到 `innerHTML`。
-- 影响：模型/provider 返回的恶意文本、用户提交的诊断字段或路网名称可能执行脚本，造成会话劫持或页面篡改。
-- 建议：统一 `escapeHtml`，只对有限 Markdown 语法做白名单转换；优先使用 `textContent`/DOM API；对 SVG 属性、数值和枚举值做类型校验；增加 CSP，并用恶意 HTML 的 E2E 用例验证不会执行。
+- 状态：动态文本统一转义，Markdown 先转义再应用有限格式规则；新增恶意 HTML E2E 回归。
 
-#### P1-2：SUMO 开关的视觉默认值与请求默认值相反
+#### P1-2：SUMO 开关的视觉默认值与请求默认值相反（已修复）
 
 - 证据：`src/web/static/index.html:142-147` 的 checkbox 默认 `checked`；`dashboard.js:118-128` 的 `state.runPhysicalSandbox=false`；`dashboard.js:297-300` 只有发生 change 事件才同步。
 - 影响：用户打开页面看到“微观 SUMO 进程推演”已勾选，直接运行时仍发送 `run_physical_sandbox=false`，实际走中观引擎。
 - 建议：初始化时从 `checkbox.checked` 写入 state，或让 JS 默认值与 HTML 一致；提交前在页面显示本次实际 `execution_mode`。
 
-#### P1-3：SUMO 状态徽章没有读取真实状态
+#### P1-3：SUMO 状态徽章没有读取真实状态（已修复）
 
 - 证据：`src/web/static/index.html:45-48` 固定显示“微观沙盒：就绪 (SUMO / TraCI)”，未发现 `dashboard.js` 对 `sandboxStatusBadge` 的更新逻辑；真实状态来自 `/api/status` 的 `simulation_engine.binary_exists`。
 - 影响：没有 SUMO 或 net.xml 的机器仍会显示“就绪”，用户无法判断当前运行是否会降级。
 - 建议：页面初始化请求 `/api/status`，按 `binary_exists`、场景文件和可用性显示“就绪/不可用/中观降级”，并与推演返回的 `execution_mode` 联动。
 
-#### P1-4：地图“策略视图”切换不改变数据
+#### P1-4：地图“策略视图”切换不改变数据（已修复）
 
 - 证据：后端 `src/web/network_api.py:219-223` 返回 `{baseline, strategy_a, strategy_b}`；前端 `dashboard.js:1206-1212` 却读取 `data.map_snapshot.edges/live`。
 - 影响：点击基线/策略按钮只改变标签和样式，地图继续使用基线 `edges/live`，视觉上无法比较策略效果。
@@ -82,7 +78,7 @@
 - 证据：`RolloutConfigInput` 在 `src/web/app.py:134-144` 接收 `corridor_choice`/`congestion_type`，但 `network_api.run_mesoscopic_rollout`（`src/web/network_api.py:169-223`）不接收它们；SUMO 固定使用 `corridor.sumocfg` 与 `J1_J2`（`src/simulation/sumo_sandbox.py:256-258,421-424`）。物理响应还明确写出所选标签仅为展示用途（`src/web/app.py:844-854`）。
 - 状态：中观推演现在将走廊/事故标签映射为显式需求与通行能力参数，并返回所选标签及实际参数；微观 SUMO 仍明确标注使用固定标定走廊。
 
-#### P1-6：事故时间滑块可以生成后端拒绝的窗口
+#### P1-6：事故时间滑块可以生成后端拒绝的窗口（已修复）
 
 - 证据：`index.html:91-107` 的 duration 最小 300、start 最大 300、end 最小 300；`dashboard.js:242-279` 在 duration/start 变化时可能把 `incident_start` 与 `incident_end` 调成相等。
 - 影响：提交 payload 时触发 Pydantic 的 `incident_start < incident_end` 校验，返回 422；用户只能看到运行失败提示。
@@ -110,34 +106,30 @@
 - 证据：`docs/technical_proposal.md:52-55` 仍写“尚未接入 OSM”；`101-106` 已承认 `delay_variance` 是 5 秒网络平均延误时序方差且 Reflexion 未实现；`114-120` 仍把指标写成“行程时间方差”和“SUMO HBEFA”。而 README `251`、`300-305` 已描述 OSM 中观网络和当前实测口径。
 - 状态：已在 `docs/technical_proposal.md` 修正 OSM 双轨网络、延误时序方差与排放接口口径；未实现的 Reflexion 仍明确标注为后续工作。
 
-#### P2-3：依赖未锁定，CI 不覆盖 E2E
+#### P2-3：依赖未锁定，CI 不覆盖 E2E（E2E 已修复）
 
 - 证据：`requirements.txt` 主要使用 `>=`；`.github/workflows/ci.yml:29-40` 只安装少量核心包并运行单测，未安装 Playwright/Chromium，也没有 E2E job。E2E 需显式 `-m e2e` 才会执行，默认 `pytest.ini` 的注释仍写“113 项”而当前核心测试为 169 项。
-- 影响：上游依赖升级可能改变结果；浏览器回归只能在本地发现，CI 绿灯不代表大屏可用。
-- 建议：提交 constraints/lock 文件；在 CI 增加可控的 E2E job 或明确发布门禁；同步 pytest 配置与测试数量说明。
+- 状态：CI 已加入 Chromium E2E job；依赖仍使用范围版本，后续可再引入 constraints 文件。
 
-#### P2-4：部分测试把当前模型收益写成硬性结论
+#### P2-4：部分测试把当前模型收益写成硬性结论（已修复）
 
 - 证据：`tests/test_web_api.py:113-117` 固定要求策略 B 延误/排队/速度改善超过阈值；`tests/test_network_mesoscopic.py:85-98` 固定要求策略优于基线。
-- 影响：模型、随机种子或参数改变时，测试可能因“收益变小”失败，而不是捕捉逻辑错误；反过来也没有验证守恒、边界和控制是否真正到达仿真器。
-- 建议：保留少量可解释的回归基准，同时把主要断言改为结构、非负、有限值、守恒、窗口约束、控制证据和统计置信区间等不变量。
+- 状态：测试已改为结构、有限值和非负不变量，收益幅度不再作为固定门槛。
 
 #### P2-5：评测器缺失总量仍以 0 表示（已修复）
 
 - 证据：`src/tools/evaluator.py:73-105` 在缺少 CO2、fuel、completed trips 或 duration 时默认 0/600，并返回 `co2_emissions_kg=0`、`fuel_liters=0`、`throughput_vph=0`。
 - 状态：`PerformanceEvaluator` 现在将缺失或非有限总量返回为 `None`，实测零值仍保持为 0；新增完整性测试覆盖两种情况。
 
-#### P2-6：Webster 工具没有防御 NaN/Inf
+#### P2-6：Webster 工具没有防御 NaN/Inf（已修复）
 
 - 证据：`src/tools/webster.py:64-68,121-125` 使用 `max(0.0, float(q))` 等转换，但 NaN 仍可穿透并生成 NaN 结果。
-- 影响：公开工具接口或实验输入一旦包含非有限值，可能污染控制计划和后续 JSON。
-- 建议：对流量、车道数、损失时间、周期等统一做 `math.isfinite` 与范围校验，异常时返回明确 `ValueError`。
+- 状态：流量和车道数已做有限性与正值校验，异常返回明确 `ValueError`。
 
-#### P2-7：多种子置信区间口径不统一
+#### P2-7：多种子置信区间口径不统一（已修复）
 
 - 证据：`src/agents/traffic_agent.py:1244-1261` 用正态近似 `1.96 * SEM`；`experiments/ablation.py:52-67` 使用小样本 t 分布。README/CHANGELOG 对外强调小样本 t-CI。
-- 影响：API 与实验报告的显著性结论可能不同，用户难以判断差异来自数据还是统计方法。
-- 建议：统一统计函数和自由度处理，或在输出中明确标注 `normal_approx`/`t_interval` 及适用样本量。
+- 状态：API 现在与实验报告一致，n≤11 使用 t 临界值并返回 `ci_method`，更大样本明确标注正态近似。
 
 ## 已验证的优点
 
