@@ -160,7 +160,7 @@ TrafficAgent-DSS/
 │   ├── test_network_mesoscopic.py         # 真实路网与中观仿真引擎专项测试 (10 项)
 │   ├── test_empirical_challenger_2.py     # 极限边界与鲁棒性挑战压力测试 (24 项)
 │   ├── test_llm_decision.py               # 大模型决策层：Schema校验/约束裁剪/闭环寻优 (56 项)
-│   └── e2e/                               # Playwright 浏览器端到端前端测试套件 (14 项)
+│   └── e2e/                               # Playwright 浏览器端到端前端测试套件 (17 项)
 │       ├── conftest.py                    # 独立 FastAPI 后台测试服务 Fixture
 │       ├── test_core_ui.py                # 大屏基础渲染、主题切换与全景截图 (3 项)
 │       ├── test_llm_modal.py              # 大模型配置弹窗与 ccSwitch 交互流 (3 项)
@@ -187,7 +187,7 @@ TrafficAgent-DSS/
 - [ ] **Step 6: 成果材料撰写与包装**（推进中：完成《作品申报书》、6页《作品说明书》小论文、录制演示视频与答辩PPT）
 
 > ✅ **系统验证与工程质量认证**（2026-09-14 最新）：
-> - **测试覆盖**：`pytest -q` 实测 **169 项通过**（原有 113 项 + 大模型决策层与闭环寻优 56 项），另 14 项 Playwright E2E 单独标记（`-m e2e`）运行；GitHub Actions CI 自动化流水线（Python 3.10 / 3.12）全部通过（绿灯）；
+> - **测试覆盖**：`pytest -q` 实测 **177 项通过**（原有 113 项 + 大模型决策层与闭环寻优 56 项），另 17 项 Playwright E2E 单独标记（`-m e2e`）运行；GitHub Actions CI 自动化流水线（Python 3.10 / 3.12）全部通过（绿灯）；
 > - **统计可靠性**：`POST /api/evaluate/multi-seed` 支持多随机种子并行推演，输出均值、标准误（SEM）与 95% 置信区间（CI）；**样本量不足（n<2）时不输出置信区间**，非物理模式如实声明样本特征，杜绝伪统计；
 > - **数据可信**：消融数据一律由 `experiments/ablation.py` 实测产出并随报告留档，README 引用的数值可由脚本复现（详见 §9.2 与 CHANGELOG 的 v2.2.4 文实对齐整改）；大模型输出的叙事与决策理由均受**数值溯源守卫**约束，引用了未经输入的数字会被**整份拒绝**；
 > - **系统健壮性**：涵盖 Webster 配时残差精准吸收、图解法公共交集真实绿波带宽计算、VMS 诱导防假触发与旁路 80% 熔断、SUMO 进程 5 秒僵尸超时清理及物理仿真缺失时的平滑高精度标定降级。完整更新记录详见 [`CHANGELOG.md`](CHANGELOG.md)。
