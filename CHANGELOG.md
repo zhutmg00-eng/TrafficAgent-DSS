@@ -9,6 +9,59 @@
 
 ---
 
+## [2026-09-14] v2.2.3：修复 `.env` 配置链路完全失效（百度地图 AK / LLM Key 配了不生效）+ 补全百度地图接入引导
+
+**主题**：按文档配置百度地图 AK 后大屏始终显示「LBS 未接入」——排查发现 **`.env` 从未被加载**：`python-dotenv` 早已写进 `requirements.txt`，`.env.example` 也明确指导"复制为 `.env` 并填入"，但全仓库**没有任何一处调用 `load_dotenv()`**。这意味着**所有**走 `.env` 的配置（`BAIDU_MAP_AK`、`LLM_API_KEY`、`SUMO_HOME`…）通通静默失效，而使用者还以为自己配好了。本次修复该链路，并顺带修正百度地图接入引导与启动自检。
+
+**影响文件**：`src/web/app.py`、`.env.example`、`CHANGELOG.md`
+
+**兼容性**：完全向后兼容。用真实环境变量/容器注入的部署方式不受影响（`override=False`，环境变量优先于 `.env`）；未安装 `python-dotenv` 时优雅降级为纯 `os.environ`，不阻断启动。
+
+---
+
+### 一、核心缺陷：`.env` 从未被加载（B15）
+
+- **现象**：把有效 AK 写进 `.env` → `/api/baidu/config` 仍返回 `configured: false` → 大屏显示"百度地图 LBS 未接入"；`LLM_API_KEY` 同样被忽略。
+- **根因**：`app.py` 中 `BAIDU_MAP_AK = os.environ.get("BAIDU_MAP_AK", "")` 位于**模块顶层**，在没有任何 `load_dotenv()` 的情况下执行，此时进程环境里只有操作系统注入的变量，`.env` 文件从未参与。
+- **修复**：在 `app.py` **所有 env 读取之前**（`sys.path` 注入之后、`from src...` 导入之前）加载 `.env`：
+  - `load_dotenv(dotenv_path=root_dir / ".env", override=False)` —— 用**项目根目录的绝对路径**而非 CWD（uvicorn 常从别处启动）；
+  - `override=False` —— 真实环境变量优先，符合 CI / 容器部署预期；
+  - `try/except ImportError` + 兜底 `except Exception` —— 缺依赖或 `.env` 损坏都不能拖垮服务启动。
+
+### 二、启动自检：把"配了没生效"变成一眼可见（B16）
+
+新增一行启动披露（**只报存在性，绝不打印密钥值**）：
+
+```
+[TrafficAgent-DSS] config: .env loaded <repo>\.env | BAIDU_MAP_AK SET | LLM_API_KEY EMPTY (rule-template fallback)
+```
+
+之前这类故障只能从大屏的一个"未接入"角标反推，现在服务日志直接给出结论。
+
+### 三、百度地图接入引导修正（文档级缺陷，会导致 AK 校验失败）
+
+- **Referer 白名单端口写错**：`.env.example` 原写 `http://127.0.0.1:8000/*`，而项目默认服务端口是 **8501**（`app.py` 的 `DEFAULT_DASHBOARD_PORT`）。照文档配白名单，百度侧会报 **`APP Referer 校验失败 (211)`**。现改为按实际端口说明，并明确"端口须与 `--port` 一致"。
+- 补全申请步骤（开发者认证 → 应用类型必须选**浏览器端** → 白名单 → 勾选"驾车路线规划"配额），并说明浏览器端 AK 属公开凭据、靠白名单防盗用、`.env` 已被 `.gitignore` 忽略。
+
+### 四、验证（实测，非推断）
+
+用**假 AK** 走通全链路（测完即清，仓库与 `.env` 中均不留任何真实/伪造密钥）：
+
+| 场景 | 期望 | 实测 |
+|:--|:--|:--|
+| `.env` 填 AK（进程环境无该变量） | 被读到 | `/api/baidu/config` → `configured: true`，AK 与 `.env` 完全一致 ✅ |
+| `.env` 填**无效** AK 后调 `/api/baidu/route` | 如实报错、**不得编造路线** | `502 {"detail": "百度路径规划返回错误 status=200: APP不存在，AK有误请检查再重试"}` ✅ |
+| `.env` 留空 AK | 诚实未配置 | `configured: false` + "真实路网视图与路径规划不可用，界面将显式标注未配置状态" ✅ |
+| 启动日志 | 披露配置状态 | `... .env loaded ... | BAIDU_MAP_AK EMPTY (dashboard shows LBS 未接入) | LLM_API_KEY EMPTY ...` ✅ |
+
+回归：`python -m unittest discover -s tests -p "test_*.py"` → **113 项全通过**。
+
+### 五、已知限制与后续待办
+- 本次**未内置任何 AK**（合规红线：不得随代码分发可用密钥）。要真正点亮地图，需自行在 https://lbs.baidu.com 申请"浏览器端"AK 并填入 `.env`。
+- 百度地图前端目前只用到了「JS API GL 底图 + 实时路况图层 + 驾车路径规划对比」；如需路况热力、轨迹回放、行政区划等能力，需在控制台另行开通对应配额。
+
+---
+
 ## [2026-09-13] v2.2.2：输出诚信专项整改（后端 B1–B14 / 前端 F1–F17）+ 事件循环阻塞与 CSS 静默失效修复
 
 **主题**：以只读审计方式对 v2.2.1 全量代码做了一轮「输出与事实是否一致」的专项体检，共定位 14 项后端缺陷与 17 项前端缺陷。核心原则仍是**绝不输出任何未经计算的数字**：凡是缺数据一律显示空态（`—`），绝不回退到「看起来合理」的展示常量；同时修复了两个会直接影响演示的工程问题——**FastAPI 事件循环被 SUMO 长时间阻塞**、以及**Windows 注册表污染导致全站 CSS 静默失效**。

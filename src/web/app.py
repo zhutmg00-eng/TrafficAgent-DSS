@@ -25,6 +25,32 @@ root_dir = Path(__file__).resolve().parent.parent.parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
+# ---------------------------------------------------------------------------
+# .env loading (must happen BEFORE any module reads os.environ).
+#
+# `python-dotenv` was already a dependency and `.env.example` told operators to
+# copy it to `.env`, but nothing ever called `load_dotenv()` — so a correctly
+# filled `.env` had NO effect: BAIDU_MAP_AK stayed empty (the dashboard kept
+# reporting "LBS 未接入") and LLM_API_KEY was ignored. Silent misconfiguration is
+# the worst kind, because the operator believes they configured it.
+#
+# `override=False` keeps real environment variables winning over the file, which
+# is what CI and container deployments expect. The path is resolved from the
+# project root rather than the CWD, because uvicorn is often launched from
+# elsewhere. A missing python-dotenv degrades to plain os.environ instead of
+# crashing the server.
+# ---------------------------------------------------------------------------
+try:
+    from dotenv import load_dotenv as _load_dotenv
+
+    _ENV_FILE = root_dir / ".env"
+    _DOTENV_LOADED = bool(_load_dotenv(dotenv_path=_ENV_FILE, override=False))
+    _DOTENV_STATUS = f"loaded {_ENV_FILE}" if _DOTENV_LOADED else f"no readable {_ENV_FILE}"
+except ImportError:  # pragma: no cover - dependency is declared in requirements.txt
+    _DOTENV_STATUS = "python-dotenv not installed; using process environment only"
+except Exception as _exc:  # pragma: no cover - never let config loading kill startup
+    _DOTENV_STATUS = f"failed to load .env: {_exc}"
+
 from src.tools.webster import WebsterSignalOptimizer
 from src.tools.green_wave import GreenWaveCoordinator
 from src.tools.rerouting import DynamicReroutingAllocator
@@ -475,6 +501,17 @@ BAIDU_MAP_AK = os.environ.get("BAIDU_MAP_AK", "").strip()
 BAIDU_MAP_CENTER_LNG = float(os.environ.get("BAIDU_MAP_CENTER_LNG", "116.337") or 116.337)
 BAIDU_MAP_CENTER_LAT = float(os.environ.get("BAIDU_MAP_CENTER_LAT", "39.965") or 39.965)
 _BAIDU_DIRECTION_URL = "https://api.map.baidu.com/direction/v2/driving"
+
+# One-line startup disclosure of the *integration* state, so a misconfigured .env is
+# obvious in the server log instead of only showing up as "未接入" on the dashboard.
+# Only presence is reported — never the value of a key.
+print(
+    "[TrafficAgent-DSS] config: "
+    f".env {_DOTENV_STATUS} | "
+    f"BAIDU_MAP_AK {'SET' if BAIDU_MAP_AK else 'EMPTY (dashboard shows LBS 未接入)'} | "
+    f"LLM_API_KEY {'SET' if os.environ.get('LLM_API_KEY', '').strip() else 'EMPTY (rule-template fallback)'}",
+    flush=True,
+)
 _BAIDU_ROUTE_CACHE: Dict[str, Dict[str, Any]] = {}
 _BAIDU_ROUTE_CACHE_TTL_S = 120.0
 _BAIDU_ROUTE_CACHE_MAX = 256
