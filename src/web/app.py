@@ -498,6 +498,19 @@ def update_llm_config(payload: LLMConfigInput):
 # AK 通过 .env 的 BAIDU_MAP_AK 配置；浏览器端 AK 靠百度控制台的 Referer 白名单保护。
 # ---------------------------------------------------------------------------
 BAIDU_MAP_AK = os.environ.get("BAIDU_MAP_AK", "").strip()
+
+# Baidu validates AKs differently depending on the *application type* chosen in the console:
+#   · 浏览器端 AK  -> validated by Referer whitelist (safe to ship to the browser)
+#   · 服务端 AK    -> validated by optional IP whitelist (must NEVER reach the browser)
+# `/api/baidu/route` calls the driving-direction **Web 服务 API from the server**, so a
+# browser-type AK can be rejected there ("Referer 校验失败"), because an httpx request
+# carries no Referer. Allow a dedicated server AK; fall back to the browser AK so a single
+# key still works on setups where Baidu accepts it.
+BAIDU_MAP_SERVER_AK = (os.environ.get("BAIDU_MAP_SERVER_AK", "") or "").strip() or BAIDU_MAP_AK
+_BAIDU_SERVER_AK_DEDICATED = bool(
+    (os.environ.get("BAIDU_MAP_SERVER_AK", "") or "").strip()
+)
+
 BAIDU_MAP_CENTER_LNG = float(os.environ.get("BAIDU_MAP_CENTER_LNG", "116.337") or 116.337)
 BAIDU_MAP_CENTER_LAT = float(os.environ.get("BAIDU_MAP_CENTER_LAT", "39.965") or 39.965)
 _BAIDU_DIRECTION_URL = "https://api.map.baidu.com/direction/v2/driving"
@@ -509,6 +522,8 @@ print(
     "[TrafficAgent-DSS] config: "
     f".env {_DOTENV_STATUS} | "
     f"BAIDU_MAP_AK {'SET' if BAIDU_MAP_AK else 'EMPTY (dashboard shows LBS 未接入)'} | "
+    f"BAIDU_MAP_SERVER_AK "
+    f"{'SET (dedicated)' if _BAIDU_SERVER_AK_DEDICATED else ('fallback -> BAIDU_MAP_AK' if BAIDU_MAP_AK else 'EMPTY (route proxy unavailable)')} | "
     f"LLM_API_KEY {'SET' if os.environ.get('LLM_API_KEY', '').strip() else 'EMPTY (rule-template fallback)'}",
     flush=True,
 )
@@ -584,10 +599,10 @@ async def baidu_driving_route(payload: BaiduRouteInput):
     (per OD pair) to respect the daily quota; failures are reported as failures —
     no synthetic route data is ever produced.
     """
-    if not BAIDU_MAP_AK:
+    if not BAIDU_MAP_SERVER_AK:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="未配置 BAIDU_MAP_AK：无法调用百度路径规划。请在 .env 中配置后重启服务。",
+            detail="未配置 BAIDU_MAP_AK / BAIDU_MAP_SERVER_AK：无法调用百度路径规划。请在 .env 中配置后重启服务。",
         )
 
     cache_key = f"{payload.origin_lng:.5f},{payload.origin_lat:.5f}->{payload.dest_lng:.5f},{payload.dest_lat:.5f}"
@@ -602,7 +617,7 @@ async def baidu_driving_route(payload: BaiduRouteInput):
     params = {
         "origin": f"{payload.origin_lat:.6f},{payload.origin_lng:.6f}",
         "destination": f"{payload.dest_lat:.6f},{payload.dest_lng:.6f}",
-        "ak": BAIDU_MAP_AK,
+        "ak": BAIDU_MAP_SERVER_AK,
         "alternatives": 1,  # 返回备选路线，供绕行对比
         "extensions_info": 1,
     }

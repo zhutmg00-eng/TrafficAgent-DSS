@@ -9,9 +9,9 @@
 
 ---
 
-## [2026-09-14] v2.2.3：修复 `.env` 配置链路完全失效（百度地图 AK / LLM Key 配了不生效）+ 补全百度地图接入引导
+## [2026-09-14] v2.2.3：修复 `.env` 配置链路完全失效（百度地图 AK / LLM Key 配了不生效）+ 支持服务端 AK 分离
 
-**主题**：按文档配置百度地图 AK 后大屏始终显示「LBS 未接入」——排查发现 **`.env` 从未被加载**：`python-dotenv` 早已写进 `requirements.txt`，`.env.example` 也明确指导"复制为 `.env` 并填入"，但全仓库**没有任何一处调用 `load_dotenv()`**。这意味着**所有**走 `.env` 的配置（`BAIDU_MAP_AK`、`LLM_API_KEY`、`SUMO_HOME`…）通通静默失效，而使用者还以为自己配好了。本次修复该链路，并顺带修正百度地图接入引导与启动自检。
+**主题**：按文档配置百度地图 AK 后大屏始终显示「LBS 未接入」——排查发现 **`.env` 从未被加载**：`python-dotenv` 早已写进 `requirements.txt`，`.env.example` 也明确指导"复制为 `.env` 并填入"，但全仓库**没有任何一处调用 `load_dotenv()`**。这意味着**所有**走 `.env` 的配置（`BAIDU_MAP_AK`、`BAIDU_MAP_SERVER_AK`、`LLM_API_KEY`、`SUMO_HOME`…）通通静默失效，而使用者还以为自己配好了。本次修复该链路，修正百度地图接入引导（含一处会导致 AK 校验失败的端口错误），并新增**服务端 AK 与浏览器端 AK 分离**能力，规避服务器侧调用被百度 Referer 校验拒绝的风险。
 
 **影响文件**：`src/web/app.py`、`.env.example`、`CHANGELOG.md`
 
@@ -59,6 +59,27 @@
 ### 五、已知限制与后续待办
 - 本次**未内置任何 AK**（合规红线：不得随代码分发可用密钥）。要真正点亮地图，需自行在 https://lbs.baidu.com 申请"浏览器端"AK 并填入 `.env`。
 - 百度地图前端目前只用到了「JS API GL 底图 + 实时路况图层 + 驾车路径规划对比」；如需路况热力、轨迹回放、行政区划等能力，需在控制台另行开通对应配额。
+
+### 六、补充：支持「服务端 AK」分离（B17）
+
+**问题**：百度按应用类型区分 AK 的校验方式——**浏览器端 AK 校验 Referer**、**服务端 AK 校验 IP**。
+而 `/api/baidu/route` 是在**服务器侧**调百度「驾车路径规划」Web 服务 API 的（httpx 请求不带 Referer），
+用浏览器端 AK 去调**有可能被百度拒绝**（典型报错 `Referer 校验失败` / `status=211`）。
+原有代码只用单一 `BAIDU_MAP_AK` 同时承担前端 SDK 与后端 REST 两种用途，存在此隐患。
+
+**修复**：新增可选 `BAIDU_MAP_SERVER_AK`
+- 后端代理优先用它；留空则**自动回退**到 `BAIDU_MAP_AK`（单 AK 场景完全不受影响）；
+- `/api/baidu/config` **只回传浏览器端 AK**，服务端 AK 绝不下发到浏览器；
+- 启动自检行增加该字段的三种状态：`SET (dedicated)` / `fallback -> BAIDU_MAP_AK` / `EMPTY (route proxy unavailable)`。
+
+**验证**（把 `_BAIDU_DIRECTION_URL` 指向本地回环回声服务，直接观测实际发出的 `ak`，无需真实密钥）：
+
+| 用例 | 期望 | 实测 |
+|:--|:--|:--|
+| 两个 AK 都配置 | 代理发出 **服务端** AK | 发出的 `ak` = 服务端 AK ✅，且不等于浏览器端 AK |
+| 读 `/api/baidu/config`（会下发到浏览器） | 只含浏览器端 AK | 含浏览器端 AK ✅，**服务端 AK 未出现** ✅ |
+| 仅配 `BAIDU_MAP_AK` | 回退使用它 | `BAIDU_MAP_SERVER_AK` 解析为浏览器端 AK，`dedicated=False` ✅ |
+| 两个都留空 | 诚实拒服务 | `503`「未配置 BAIDU_MAP_AK / BAIDU_MAP_SERVER_AK…」✅ |
 
 ---
 
