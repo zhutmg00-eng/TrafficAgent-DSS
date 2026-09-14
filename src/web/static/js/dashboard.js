@@ -514,11 +514,11 @@ function renderRolloutKPIs() {
   const tpImp = document.getElementById('rolloutTpImp');
   const co2Imp = document.getElementById('rolloutCo2Imp');
 
-  if (delayImp) delayImp.textContent = delayV === null ? NO_DATA : `-${delayV}%`;
-  if (queueImp) queueImp.textContent = queueV === null ? NO_DATA : `-${queueV}%`;
+  if (delayImp) delayImp.textContent = delayV === null ? NO_DATA : `${delayV > 0 ? "−" : delayV < 0 ? "+" : ""}${Math.abs(delayV)}%`;
+  if (queueImp) queueImp.textContent = queueV === null ? NO_DATA : `${queueV > 0 ? "−" : queueV < 0 ? "+" : ""}${Math.abs(queueV)}%`;
   if (speedImp) speedImp.textContent = speedV === null ? NO_DATA : `${speedV >= 0 ? '+' : ''}${speedV}%`;
   if (tpImp) tpImp.textContent = tpV === null ? NO_DATA : `${tpV >= 0 ? '+' : ''}${tpV}%`;
-  if (co2Imp) co2Imp.textContent = co2V === null ? NO_DATA : `-${co2V}%`;
+  if (co2Imp) co2Imp.textContent = co2V === null ? NO_DATA : `${co2V > 0 ? "−" : co2V < 0 ? "+" : ""}${Math.abs(co2V)}%`;
 
   const delayAct = document.getElementById('rolloutDelayAct');
   const queueAct = document.getElementById('rolloutQueueAct');
@@ -532,11 +532,11 @@ function renderRolloutKPIs() {
   const tput = numOrNull(kpis?.throughput_vph);
   const co2K = numOrNull(kpis?.co2_emissions_kg);
 
-  if (delayAct) delayAct.textContent = delayS === null ? NO_DATA : `降至 ${delayS} s/veh`;
-  if (queueAct) queueAct.textContent = queueM === null ? NO_DATA : `缩减至 ${queueM} m`;
+  if (delayAct) delayAct.textContent = delayS === null ? NO_DATA : `${delayS} s/veh`;
+  if (queueAct) queueAct.textContent = queueM === null ? NO_DATA : `${queueM} m`;
   if (speedAct) speedAct.textContent = speedK === null ? NO_DATA : `至 ${speedK} km/h`;
   if (tpAct) tpAct.textContent = tput === null ? NO_DATA : `达 ${tput} veh/h`;
-  if (co2Act) co2Act.textContent = co2K === null ? NO_DATA : `降至 ${co2K} kg`;
+  if (co2Act) co2Act.textContent = co2K === null ? NO_DATA : `${co2K} kg`;
 
   // Overall effectiveness grade (F3). Was previously never written by any code path, so the
   // header kept the static "综合评级：待推演评估" even after a successful run. The grade is
@@ -571,7 +571,7 @@ function renderHeroConclusion(comp, kpis) {
   const delayV = numOrNull(comp?.delay_improvement_pct);
   const delayS = numOrNull(kpis?.avg_delay_s);
   const mode = state.rollout?.execution_mode || '';
-  const isLive = state.rollout?.degraded !== true && !mode.startsWith('calibrated');
+  const isLive = mode === 'physical_sumo_sandbox';
 
   if (delayV === null) {
     heroValue.textContent = NO_DATA;
@@ -580,12 +580,14 @@ function renderHeroConclusion(comp, kpis) {
     return;
   }
 
-  heroValue.textContent = `-${delayV}%`;
-  const delayPart = delayS === null ? '' : `，方案 B 实测车均延误降至 ${delayS} s/veh`;
-  heroHeadline.textContent = `启用智能体协同方案后，车均延误较基线降低 ${delayV}%${delayPart}。`;
+  heroValue.textContent = `${delayV > 0 ? "−" : delayV < 0 ? "+" : ""}${Math.abs(delayV)}%`;
+  const delayPart = delayS === null ? '' : `，方案 B 延误指标为 ${delayS} s/veh`;
+  heroHeadline.textContent = `启用智能体协同方案后，延误较基线${delayV > 0 ? "降低" : delayV < 0 ? "增加" : "持平"} ${Math.abs(delayV)}%${delayPart}。`;
   heroSub.textContent = isLive
     ? '数据来源：SUMO 微观物理推演（三方案同参数对照）。'
-    : '数据来源：标定经验模型（未运行物理沙盒），结论仅供方向性参考。';
+    : mode === 'mesoscopic_network'
+      ? '数据来源：OSM 路网中观模型推演，非 SUMO 微观结果。'
+      : '数据来源：标定经验模型（未运行物理沙盒），结论仅供方向性参考。';
 }
 
 // Show a prominent banner whenever the rollout payload is NOT a live SUMO measurement
@@ -1334,8 +1336,7 @@ function renderRoadNetwork() {
         style = 'filter:url(#bottleneckGlow);';
       }
 
-      const d = `M ${coords}`;
-      svgContent += `<polyline class="${cls}" d="${d}" stroke="${color}" stroke-width="${width}" style="${style}" stroke-opacity="${isBottleneck ? 1 : 0.85}" data-edge-id="${escapeHtml(e.id)}" data-edge-name="${escapeHtml(e.name || '')}" data-edge-speed="${escapeHtml(renderLive?.[e.id]?.speed_kmh ?? e.speed_kmh ?? '')}" data-edge-queue="${escapeHtml(renderLive?.[e.id]?.queue_m ?? '')}" data-edge-occupancy="${escapeHtml(renderLive?.[e.id]?.occupancy ?? '')}" data-edge-flow="${escapeHtml(renderLive?.[e.id]?.flow_vph ?? '')}" data-edge-level="${escapeHtml(level)}"/>
+      svgContent += `<polyline class="${cls}" points="${coords}" stroke="${color}" stroke-width="${width}" style="${style}" stroke-opacity="${isBottleneck ? 1 : 0.85}" data-edge-id="${escapeHtml(e.id)}" data-edge-name="${escapeHtml(e.name || '')}" data-edge-speed="${escapeHtml(renderLive?.[e.id]?.speed_kmh ?? e.speed_kmh ?? '')}" data-edge-queue="${escapeHtml(renderLive?.[e.id]?.queue_m ?? '')}" data-edge-occupancy="${escapeHtml(renderLive?.[e.id]?.occupancy ?? '')}" data-edge-flow="${escapeHtml(renderLive?.[e.id]?.flow_vph ?? '')}" data-edge-level="${escapeHtml(level)}"/>
 `;
 
       // Bottleneck label

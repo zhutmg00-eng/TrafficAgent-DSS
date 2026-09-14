@@ -70,39 +70,38 @@ class PerformanceEvaluator:
             if bn_clean is not None:
                 speeds = [s / 3.6 for s in bn_clean]
 
-        raw_co2 = raw_stats.get("total_co2_mg")
-        co2_mg = max(0.0, float(raw_co2)) if raw_co2 is not None else 0.0
+        def total(key):
+            try:
+                value = float(raw_stats.get(key))
+            except (TypeError, ValueError):
+                return None
+            return value if math.isfinite(value) and value >= 0 else None
 
-        # Fuel totals are carried in mg. `total_fuel_ml` used to alias the mg value under a
-        # millilitre name, so any consumer reading it as volume was off by ~1000x. Accept
-        # only unambiguous keys here and convert litres back to mg when that is all we get.
-        raw_fuel_mg = raw_stats.get("total_fuel_mg")
-        if raw_fuel_mg is not None:
-            fuel_mg = max(0.0, float(raw_fuel_mg))
-        elif raw_stats.get("total_fuel_liters") is not None:
-            fuel_mg = max(0.0, float(raw_stats["total_fuel_liters"]) * 740000.0)
-        else:
-            fuel_mg = 0.0
-
-        raw_trips = raw_stats.get("completed_trips")
-        completed_trips = max(0, int(raw_trips)) if raw_trips is not None else 0
-
-        raw_duration = raw_stats.get("simulation_duration")
-        sim_duration_sec = max(1.0, float(raw_duration)) if raw_duration is not None else 600.0
+        co2_mg = total("total_co2_mg")
+        fuel_mg = total("total_fuel_mg")
+        if fuel_mg is None and "total_fuel_mg" not in raw_stats:
+            liters = total("total_fuel_liters")
+            fuel_mg = liters * 740000.0 if liters is not None else None
+        completed_trips = total("completed_trips")
+        if completed_trips is not None and not completed_trips.is_integer():
+            completed_trips = None
+        sim_duration_sec = total("simulation_duration")
 
         avg_delay = float(np.mean(delays)) if delays else None
         max_queue = float(np.max(queues)) if queues else None
         avg_speed_kmh = float(np.mean(speeds)) * 3.6 if speeds else None
-        throughput_vph = round(completed_trips * (3600.0 / sim_duration_sec), 1)
+        throughput_vph = (round(completed_trips * (3600.0 / sim_duration_sec), 1)
+                          if completed_trips is not None and sim_duration_sec is not None
+                          and sim_duration_sec > 0 else None)
         # Variance of the 5-second network-mean delay series (stability over time),
         # NOT the per-vehicle travel-time variance — see the class docstring. Needs at
         # least two samples to mean anything; a single sample reports None, not 0.0.
         delay_variance = round(float(np.var(delays)), 1) if delays and len(delays) > 1 else None
-        co2_kg = round(co2_mg / 1e6, 2)
+        co2_kg = round(co2_mg / 1e6, 2) if co2_mg is not None else None
         # SUMO getFuelConsumption returns mg/s; fuel mass is in mg.
         # Density for standard gasoline is ~0.74 kg/L (740,000 mg/L).
-        fuel_liters = round((fuel_mg / 1e6) / 0.74, 2) if fuel_mg > 0 else 0.0
-        fuel_kg = round(fuel_mg / 1e6, 2)
+        fuel_liters = round((fuel_mg / 1e6) / 0.74, 2) if fuel_mg is not None else None
+        fuel_kg = round(fuel_mg / 1e6, 2) if fuel_mg is not None else None
 
         return {
             "avg_delay_s": round(avg_delay, 1) if avg_delay is not None else None,

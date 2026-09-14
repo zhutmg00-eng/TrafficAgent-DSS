@@ -836,8 +836,8 @@ class TestTrafficAgentDSS(unittest.TestCase):
         kpi = self.evaluator.compute_summary_kpi(raw_none)
         self.assertEqual(kpi["avg_delay_s"], 25.0)
         self.assertEqual(kpi["max_queue_m"], 50.0)
-        self.assertEqual(kpi["co2_emissions_kg"], 0.0)
-        self.assertEqual(kpi["fuel_liters"], 0.0)
+        self.assertIsNone(kpi["co2_emissions_kg"])
+        self.assertIsNone(kpi["fuel_liters"])
 
     def test_evaluator_compare_schemes_with_none_kpis(self):
         """Tests that compare_schemes handles dictionaries containing None KPI values."""
