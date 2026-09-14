@@ -1242,6 +1242,10 @@ class TrafficDecisionAgent:
             "variance_improvement_pct", "co2_improvement_pct", "fuel_improvement_pct"
         ]
         b_improvements = {}
+        # Small-sample t critical values keep API intervals consistent with the
+        # published ablation reports. For larger n the normal limit is adequate.
+        t_critical = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571,
+                      6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228}
         for ck in comp_keys:
             vals = [
                 float(r["comparisons"]["strategy_b"][ck])
@@ -1252,13 +1256,15 @@ class TrafficDecisionAgent:
                 mean_v = float(np.mean(vals))
                 std_v = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
                 sem_v = float(std_v / np.sqrt(len(vals))) if len(vals) > 1 else 0.0
-                ci_low = round(mean_v - 1.96 * sem_v, 2)
-                ci_high = round(mean_v + 1.96 * sem_v, 2)
+                critical = t_critical.get(len(vals) - 1, 1.96)
+                ci_low = round(mean_v - critical * sem_v, 2)
+                ci_high = round(mean_v + critical * sem_v, 2)
                 b_improvements[ck] = {
                     "mean": round(mean_v, 2),
                     "std": round(std_v, 2),
                     "sem": round(sem_v, 2),
                     "ci_95": [ci_low, ci_high],
+                    "ci_method": "t" if len(vals) - 1 in t_critical else "normal_approximation",
                 }
 
         delay_stat = b_improvements.get("delay_improvement_pct", {})
