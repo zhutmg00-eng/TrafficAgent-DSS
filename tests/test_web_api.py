@@ -5,6 +5,7 @@ Validates all FastAPI routes, request-response validation, and static serving.
 
 import sys
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from fastapi.testclient import TestClient
 
@@ -20,7 +21,10 @@ class TestWebAPI(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.client = TestClient(app)
+        cls.admin_env = patch.dict('os.environ', {'TRAFFIC_ADMIN_TOKEN': 'test-admin-token'})
+        cls.admin_env.start()
+        cls.addClassCleanup(cls.admin_env.stop)
+        cls.client = TestClient(app, headers={'Authorization': 'Bearer test-admin-token'})
 
     def test_serve_index_html(self):
         """Tests that the root endpoint serves the interactive HTML dashboard."""
