@@ -77,11 +77,10 @@
 - 影响：点击基线/策略按钮只改变标签和样式，地图继续使用基线 `edges/live`，视觉上无法比较策略效果。
 - 建议：前端根据当前视图选择 `map_snapshot.baseline` 或 `map_snapshot.strategy_b`（并处理 A/B），或者后端统一返回前端所需的 `{edges, live}` 结构；增加 E2E 断言切换后路段颜色/数据确实变化。
 
-#### P1-5：场景选择没有驱动实际仿真
+#### P1-5：场景选择没有驱动实际仿真（已修复）
 
 - 证据：`RolloutConfigInput` 在 `src/web/app.py:134-144` 接收 `corridor_choice`/`congestion_type`，但 `network_api.run_mesoscopic_rollout`（`src/web/network_api.py:169-223`）不接收它们；SUMO 固定使用 `corridor.sumocfg` 与 `J1_J2`（`src/simulation/sumo_sandbox.py:256-258,421-424`）。物理响应还明确写出所选标签仅为展示用途（`src/web/app.py:844-854`）。
-- 影响：用户选择不同走廊、事故类型后，界面看起来发生了变化，但 KPI 和底层网络仍来自同一工况，结论容易被误读。
-- 建议：实现“场景 ID → 网络/需求/事故机制”的显式映射，并在响应中返回 `requested_scenario` 与 `simulated_scenario`；若暂不实现，应删掉可选择控件或显著标注“仅展示”。
+- 状态：中观推演现在将走廊/事故标签映射为显式需求与通行能力参数，并返回所选标签及实际参数；微观 SUMO 仍明确标注使用固定标定走廊。
 
 #### P1-6：事故时间滑块可以生成后端拒绝的窗口
 
@@ -95,11 +94,10 @@
 - 影响：同一车辆在多个时刻被重复计入，已到达车辆被排除；该值不能直接解释为 `mean_vehicle_time_loss_s_per_veh`，会随到达率和停留时间产生偏置，影响策略比较与论文表述。
 - 建议：收集每车完成行程后的最终 `timeLoss`/tripinfo，再按车辆聚合；或将字段改名为“active-vehicle cumulative time-loss sample mean”，同步实验报告和 API 文档。
 
-#### P1-8：推理型模型参数固定，可能直接失败并静默降级
+#### P1-8：推理型模型参数固定，可能直接失败并静默降级（已修复）
 
 - 证据：`src/agents/llm_decision.py:422-424` 固定 `temperature=0.2,max_tokens=900`；`src/agents/llm_client.py:365-379` 原样传给 `chat.completions.create`。
-- 影响：部分 reasoning 模型不接受 `temperature`，或要求 `max_completion_tokens`；请求失败后会回到规则链，若 UI 只显示“在线”而不显示降级原因，用户会误以为大模型参与了决策。
-- 建议：按模型族/供应商适配参数；对明确的参数兼容错误做一次安全重试；在 API 和界面显示 `decision_mode`、`last_error` 与实际采用的引擎。
+- 状态：LLM 客户端按模型名识别 reasoner/o 系列与 thinking 模型，分别使用 `max_completion_tokens` 或传统 `temperature`/`max_tokens`；实际降级模式仍通过 API 状态返回。
 
 ### P2：维护性、统计语义与工程卫生
 
