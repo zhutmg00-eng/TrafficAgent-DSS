@@ -388,12 +388,12 @@ class SumoSimulationSandbox:
         started = False
 
         # Time-series collection
-            time_stamps = []
-            bottleneck_queues = []
-            bottleneck_speeds = []
-            network_delays = []
-            final_vehicle_losses = {}
-            last_vehicle_losses = {}
+        time_stamps = []
+        bottleneck_queues = []
+        bottleneck_speeds = []
+        network_delays = []
+        final_vehicle_losses = {}
+        last_vehicle_losses = {}
         completed_vehicles = 0
         total_co2 = 0.0
         total_fuel = 0.0
