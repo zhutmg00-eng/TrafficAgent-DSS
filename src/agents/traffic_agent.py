@@ -1285,6 +1285,11 @@ class TrafficDecisionAgent:
 
     # A candidate round is discarded when it buys delay reduction by dumping queue
     # onto the corridor: the project's governance goal is not "minimise one metric".
+    #
+    # The reference for "dumped" is the deterministic rule-chain plan — the plan this
+    # system deploys anyway — measured on the SAME seed as the candidate. It used to be
+    # the do-nothing baseline, which made the threshold a function of how benign the
+    # uncontrolled run happened to be (see the comment inside the loop).
     QUEUE_BLOWUP_RATIO = 1.25
 
     def optimize_control_policy_closed_loop(
@@ -1312,6 +1317,13 @@ class TrafficDecisionAgent:
         tools never produced) the loop stops and the deterministic result stands, with
         `decision_mode = deterministic_rule_chain` and the reason recorded. No
         "optimised" figure is ever invented to fill the gap.
+
+        How a round is judged: it must (a) beat the measured average delay of the incumbent,
+        and (b) not exceed the deterministic rule-chain plan's measured peak queue by more
+        than `QUEUE_BLOWUP_RATIO` — the system must not buy delay by dumping queue onto the
+        corridor. Both yardsticks are measured on the same seed as the candidate; every round
+        records the measured queue, the reference used, and the do-nothing queue, so either
+        rule can be re-derived by a reviewer.
 
         Returns a fully auditable trace: per round, what the model requested, what was
         actually deployed after clipping, why anything was clipped, and the measured KPI.
@@ -1360,8 +1372,26 @@ class TrafficDecisionAgent:
             v = (kpi or {}).get("avg_delay_s")
             return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
-        baseline_queue = (base_kpi or {}).get("max_queue_m")
-        baseline_queue = float(baseline_queue) if isinstance(baseline_queue, (int, float)) else None
+        def _queue_of(kpi: Dict[str, Any]) -> Optional[float]:
+            v = (kpi or {}).get("max_queue_m")
+            return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+        # Queue reference = the plan we would otherwise deploy (the deterministic rule
+        # chain), NOT the do-nothing baseline.
+        #
+        # Measured on the calibrated incident (600 s, 150–420 s), the do-nothing peak queue
+        # swings between 60 m and 307.5 m across seeds, so a 1.25x-of-baseline threshold
+        # rejected every candidate in a 32-point policy grid — including the reference rule
+        # chain itself on two of three seeds. The loop could therefore adopt nothing at all,
+        # while reporting itself as working: a guard whose yardstick is that unstable stops
+        # being a guard. Anchoring to the rule chain keeps the intent (a round may not buy
+        # delay by dumping more queue than the plan we always deploy) and is stable, because
+        # the reference is measured under exactly the conditions of the candidate.
+        #
+        # The do-nothing queue is still recorded on every round as `baseline_queue_m`, so the
+        # audit trail keeps both yardsticks and a reviewer can re-derive either rule.
+        reference_queue = _queue_of(det_kpi)
+        baseline_queue = _queue_of(base_kpi)
 
         # The deterministic result is the incumbent; a round must beat it to be adopted.
         best: Dict[str, Any] = {
@@ -1452,12 +1482,12 @@ class TrafficDecisionAgent:
             comparison = self.evaluator.compare_schemes(base_kpi, kpi)
             delay_s = _delay_of(kpi)
 
-            queue_m = kpi.get("max_queue_m")
+            measured_queue = _queue_of(kpi)
             queue_ok = True
             if (
-                isinstance(queue_m, (int, float)) and not isinstance(queue_m, bool)
-                and baseline_queue is not None and baseline_queue > 0
-                and float(queue_m) > baseline_queue * self.QUEUE_BLOWUP_RATIO
+                measured_queue is not None
+                and reference_queue is not None and reference_queue > 0
+                and measured_queue > reference_queue * self.QUEUE_BLOWUP_RATIO
             ):
                 queue_ok = False
 
@@ -1494,6 +1524,10 @@ class TrafficDecisionAgent:
                     )
                 },
                 "queue_constraint_respected": queue_ok,
+                "measured_queue_m": measured_queue,
+                "queue_reference_m": reference_queue,
+                "queue_reference_source": "deterministic_rule_chain",
+                "baseline_queue_m": baseline_queue,
                 "adopted_as_best": adopted,
             })
 

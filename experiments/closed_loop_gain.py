@@ -27,14 +27,18 @@ P1 的端到端验证（`_closed_loop_evidence.json`）只证明了**通路成�
 
 关于"排队约束"的两个口径（重要）
 --------------------------------
-线上闭环采纳一条策略的条件是"延误更低 **且** 峰值排队不超过无干预基线的 1.25 倍"。
-标定工况下这个标尺会失效：无干预基线的峰值排队可能非常小，导致阈值远低于任何实际控制
-方案的排队量（连参考规则链本身都被拒）。因此本实验同时给出两个最优：
+线上闭环采纳一条策略的条件是"延误更低 **且** 实测峰值排队不超过**参考规则链方案**的
+1.25 倍"（同一种子）。因此本实验同时给出两个最优：
 
   - **P\\***：不加排队约束的**延误最优**（即闭环机制能触及的上限）
   - **P_feasible**：同时满足排队约束的最优（即线上会真正采纳的候选）
 
-两者的差距 = 采纳规则当前漏掉的收益。该规则的触发率在第 7 节单独审计。
+两者的差距 = 采纳规则当前漏掉的收益；若 P_feasible 不存在，说明网格内没有一条策略
+能"不靠牺牲排队"拿到增益。该约束的触发率与参照物选择在第 7 节单独审计。
+
+> 注：该约束此前以"无干预基线"排队的 1.25 倍为阈值，实测在标定工况下会把 32/32 个候选
+> （含参考规则链本身）全部拒掉。修复后的口径见 `v2.3.2`，修复前的证据保留在
+> `closed_loop_gain_v1.md`。
 
 诚实边界
 --------
@@ -318,17 +322,32 @@ class PolicyGainExperiment:
 
     # ---------------- 候选打分 ---------------- #
     def score(self, candidate: Dict[str, Any], seeds: List[int],
-              base_kpi: Dict[int, Dict[str, Any]]) -> Dict[str, Any]:
+              base_kpi: Dict[int, Dict[str, Any]],
+              ref_kpi: Dict[int, Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Measures one candidate on every seed.
+
+        The queue guard is evaluated exactly as the online loop evaluates it: a candidate is
+        flagged out when its measured peak queue exceeds the **deterministic reference
+        plan's** peak queue (same seed) by more than `QUEUE_BLOWUP_RATIO`. The do-nothing
+        queue is recorded alongside, because that was the old yardstick and the comparison
+        between the two is itself the evidence for why it was changed.
+        """
         payload = self._payload_for(candidate)
-        delays, queues, ok = [], [], True
+        delays, queues, base_queues, ref_queues, ok = [], [], [], [], True
         for s in seeds:
             kpi = self.policy_kpi(payload, s)
             delays.append(float(kpi["avg_delay_s"]))
             q = kpi.get("max_queue_m")
+            measured = float(q) if isinstance(q, (int, float)) and not isinstance(q, bool) else float("nan")
             base_q = base_kpi[s].get("max_queue_m")
-            queues.append(float(q) if isinstance(q, (int, float)) else float("nan"))
-            if (isinstance(q, (int, float)) and isinstance(base_q, (int, float))
-                    and base_q > 0 and float(q) > float(base_q) * QUEUE_BLOWUP_RATIO):
+            ref_q = ref_kpi[s].get("max_queue_m")
+            queues.append(measured)
+            base_queues.append(float(base_q) if isinstance(base_q, (int, float)) else float("nan"))
+            ref_queues.append(float(ref_q) if isinstance(ref_q, (int, float)) else float("nan"))
+            if (isinstance(ref_q, (int, float)) and not isinstance(ref_q, bool) and float(ref_q) > 0
+                    and measured == measured
+                    and measured > float(ref_q) * QUEUE_BLOWUP_RATIO):
                 ok = False
         return {
             "policy": dict(candidate),
@@ -336,6 +355,8 @@ class PolicyGainExperiment:
             "mean_delay_s": round(statistics.fmean(delays), 3),
             "delays_s": [round(d, 3) for d in delays],
             "mean_queue_m": round(statistics.fmean(queues), 2),
+            "queue_reference_m": round(statistics.fmean(ref_queues), 2),
+            "mean_baseline_queue_m": round(statistics.fmean(base_queues), 2),
             "queue_constraint_ok": ok,
         }
 
@@ -455,7 +476,7 @@ class PolicyGainExperiment:
                 for v in values:
                     cand = dict(incumbent)
                     cand[knob] = v
-                    r = self.score(cand, seeds, base_kpi)
+                    r = self.score(cand, seeds, base_kpi, det_kpi)
                     r["pass"] = p
                     r["knob"] = knob
                     r["value"] = v
@@ -463,7 +484,8 @@ class PolicyGainExperiment:
                     all_scored.append(r)
                     flag = "" if r["queue_constraint_ok"] else "  [排队约束未通过]"
                     print(f"      {knob}={v}: 延误均值 {r['mean_delay_s']} s/veh"
-                          f"，排队均值 {r['mean_queue_m']} m{flag}", flush=True)
+                          f"，排队均值 {r['mean_queue_m']} m（参照 {r['queue_reference_m']} m）{flag}",
+                          flush=True)
                 # 排序不设排队门槛：本实验要测的是"闭环机制能触及的延误上限"。
                 # 排队约束是否通过只作为标记记下来，其后果在第 7 节单独审计 ——
                 # 若在这里直接按线上规则筛掉大部分候选，得到的结论会是"增益≈0"，
@@ -742,29 +764,32 @@ def to_markdown(explore_seeds, validate_seeds, duration, istart, iend,
         L.append(f"- 说明：{rec.get('note')}")
         L.append("")
 
-    L.append("## 7. 排队约束行为审计（采纳规则的标尺是否可用）")
+    L.append("## 7. 排队约束行为审计")
     L.append("")
-    L.append("线上闭环只在「候选峰值排队 ≤ 该种子无干预基线峰值排队 × "
-             f"{QUEUE_BLOWUP_RATIO}」时才采纳。本节检查这个标尺在标定工况下是否可用。")
+    L.append(f"线上闭环只在「候选实测峰值排队 ≤ **参考规则链方案**实测峰值排队 × "
+             f"{QUEUE_BLOWUP_RATIO}」时才采纳（同一种子）。本节检查该约束在标定工况下的实际行为。")
     L.append("")
-    L.append("| 调参种子 | 无干预基线峰值排队 (m) | 约束阈值 (m) | 参考规则链峰值排队 (m) | 规则链是否通过 |")
+    L.append("| 调参种子 | 无干预基线峰值排队 (m) | 参考规则链峰值排队 (m) = 阈值分母 | 阈值 (m) | 参考方案本身是否通过 |")
     L.append("|---|---|---|---|---|")
     qthr = a.get("queue_threshold_by_seed", {})
     bq = a.get("baseline_queue_by_seed", {})
     dq = a.get("deterministic_queue_by_seed", {})
     for s in qthr:
-        ok = dq.get(s) is not None and dq.get(s) <= qthr[s]
-        L.append(f"| {s} | {bq.get(s)} | {qthr[s]} | {dq.get(s)} | "
-                 f"{'是' if ok else '**否**'} |")
+        ref = dq.get(s)
+        thr = round(ref * QUEUE_BLOWUP_RATIO, 2) if isinstance(ref, (int, float)) else None
+        L.append(f"| {s} | {bq.get(s)} | {ref} | {thr} | 是（阈值即其自身 × {QUEUE_BLOWUP_RATIO}） |")
     L.append("")
     total = search_res.get("candidates_total")
     feas = search_res.get("feasible_candidates_total")
     if total:
         L.append(f"- 调参网格内共评测 {total} 个候选，其中通过排队约束 **{feas}** 个"
                  f"（{feas / total * 100:.0f}%）。")
-    L.append("- 若表中「参考规则链」本身即未通过，则该约束在标定工况下会拒绝系统自己"
-             "推荐的方案 —— 这不是策略优劣问题，而是**标尺口径问题**：以无干预基线的"
-             "单次峰值排队为分母，分母本身在种子间波动极大（见上表），阈值随之失去意义。")
+        L.append("- 未通过的候选，其排队高于参考方案 "
+                 f"{int((QUEUE_BLOWUP_RATIO - 1) * 100)}% 以上（这是判据的定义）；"
+                 "通过率低是网格本身在探索边界所致，不代表约束有缺陷。")
+    L.append("- 历史对照：该约束此前以**无干预基线**排队为分母，而基线排队在种子间从 "
+             "60 m 波动到 307.5 m，导致 32/32 个候选（含参考规则链本身）全部被拒 —— "
+             "闭环在标定工况下一条策略都采纳不了。证据与数字见 `closed_loop_gain_v1.md` 第 7 节。")
     L.append("")
 
     L.append("## 8. 结论（按预设判据自动生成）")
@@ -781,8 +806,8 @@ def to_markdown(explore_seeds, validate_seeds, duration, istart, iend,
     L.append("- P\\* 是给定网格上的局部最优，不是全局最优；网格之外的策略空间未探索。")
     L.append("- 留出种子与调参种子不相交，但两者都来自同一套工况标定；"
              "跨工况（不同流量/不同位置事故）的迁移性未验证。")
-    L.append("- 第 7 节指出的是**采纳规则**的问题，因此第 3–4 节的 P\\* 是「不加该约束」的"
-             "上限；线上在当前规则下可能一条都不采纳。两者不可混用。")
+    L.append("- 第 3–4 节的 P\\* 是**不加排队约束**的延误上限；线上真正会采纳的是 "
+             "P_feasible（若不存在则说明网格内没有「不牺牲排队」的增益）。两者不可混用。")
     L.append("")
     return "\n".join(L) + "\n"
 
@@ -827,8 +852,14 @@ def verdict_lines(validate_res, search_res, anchor) -> List[str]:
         out.append(f"2. 约束内最优 P_feasible（= 线上当前会采纳的候选）相对规则链的"
                    f"平均延误差 {stf['mean']:.2f} s/veh（{dd:.2f} → {fb:.2f}），"
                    f"CI {stf['ci95']}，胜率 {stf['wins']}/{stf['n']}"
-                   f"（{'统计显著' if stf['significant_gain'] else '不显著'}）。"
-                   f"与 P\\* 的差值即为采纳规则当前漏掉的收益。")
+                   f"（{'统计显著' if stf['significant_gain'] else '不显著'}）。")
+        if stf["mean"] is not None and stf["mean"] > 0:
+            out.append(f"   - 该差值为正，意味着排队约束确实漏掉了一部分延误收益；"
+                       f"缺口大小 = P\\* 与 P_feasible 的差值。")
+        else:
+            out.append("   - 该差值**不为正**：被排队约束放行的那条策略在留出种子上比规则链更差。"
+                       "这说明「放宽约束就能拿到增益」是错的 —— 网格内没有既不放排队、又能稳定降延误的策略，"
+                       "约束并不是收益的瓶颈，**调参集的代表性**才是。")
     if "P2_runner_up" in cmps and "deterministic" in cmps["P2_runner_up"]:
         st2 = cmps["P2_runner_up"]["deterministic"]["avg_delay_s"]
         out.append(f"3. 次优候选 P2 相对规则链的平均延误差 {st2['mean']:.2f} s/veh，"
@@ -856,7 +887,35 @@ def main():
     ap.add_argument("--tag", type=str, default=time.strftime("%Y%m%d_%H%M%S"))
     ap.add_argument("--out", type=str, default=None, help="报告 markdown 路径")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--regen-from", type=str, default=None,
+                    help="由已保存的 raw json 重建报告（不重跑仿真，用于修正报告措辞）")
     args = ap.parse_args()
+
+    if args.regen_from:
+        raw = json.loads(Path(args.regen_from).read_text(encoding="utf-8"))
+        cfg = raw["config"]
+        rebuilt = {
+            "arms": {
+                k: {
+                    "label": v["label"], "note": v["note"], "metrics": v["metrics"],
+                    "kpis": {int(s): kpi for s, kpi in v["per_seed"].items()},
+                }
+                for k, v in raw["validation"]["arms"].items()
+            },
+            "comparisons": raw["validation"]["comparisons"],
+            "run_log": raw["run_log"],
+            "validate_seeds": cfg["validate_seeds"],
+        }
+        md = to_markdown(cfg["explore_seeds"], cfg["validate_seeds"], cfg["duration"],
+                         cfg["incident_start"], cfg["incident_end"],
+                         raw["search"], rebuilt, raw.get("online_pipeline_check"),
+                         raw["sim_count"], raw["elapsed_s"],
+                         guard=raw.get("deterministic_equivalence_guard"))
+        out_path = (Path(args.out) if args.out
+                    else Path(args.regen_from).parent / f"closed_loop_gain_{args.tag}.md")
+        out_path.write_text(md, encoding="utf-8")
+        print(f"[closed_loop_gain] 报告已由原始数据重建 → {out_path}")
+        return
 
     overlap = set(args.explore_seeds) & set(args.validate_seeds)
     if overlap:

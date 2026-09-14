@@ -678,6 +678,40 @@ class TestClosedLoopOptimisation(unittest.TestCase):
         self.assertFalse(rd["adopted_as_best"])
         self.assertEqual(res["best"]["source"], "deterministic_rule_chain")
 
+    def test_queue_guard_is_anchored_to_the_reference_plan_not_to_doing_nothing(self):
+        """
+        Calibrated-incident regression.
+
+        Measured at 600 s / incident 150-420 s, the do-nothing peak queue swings 60 m ->
+        307.5 m across seeds. Anchoring the guard to it made the threshold reject every
+        candidate in a 32-point grid, including the reference rule chain itself, so the loop
+        could adopt nothing while still reporting that it ran. The reference must be the plan
+        the system deploys anyway (the rule chain, measured on the same seed).
+        """
+        # baseline queue is tiny (20 m -> a 25 m threshold), the reference plan's is 200 m.
+        # The model's round cuts the queue to 180 m, which is FINE against the reference
+        # (<= 250 m) and would have been wrongly rejected against the do-nothing baseline.
+        agent = self._agent([(30.0, 20.0), (25.0, 200.0), (20.0, 180.0)])
+        res = agent.optimize_control_policy_closed_loop(DIAGNOSIS, rounds=1, **self.WINDOW)
+        rd = res["rounds"][0]
+        self.assertTrue(rd["queue_constraint_respected"], "reference-anchored guard should pass")
+        self.assertTrue(rd["adopted_as_best"])
+        self.assertEqual(res["best"]["source"], "llm_decision_layer")
+        # Both yardsticks stay in the audit trail so either rule can be re-derived.
+        self.assertEqual(rd["queue_reference_m"], 200.0)
+        self.assertEqual(rd["baseline_queue_m"], 20.0)
+        self.assertEqual(rd["measured_queue_m"], 180.0)
+        self.assertEqual(rd["queue_reference_source"], "deterministic_rule_chain")
+
+    def test_reference_plan_itself_is_never_rejected_by_the_queue_guard(self):
+        # The rule chain is the yardstick, so a model round that reproduces it must pass the
+        # queue test — otherwise the guard is rejecting the system's own recommended plan.
+        agent = self._agent([(30.0, 20.0), (25.0, 200.0), (20.0, 200.0)])
+        res = agent.optimize_control_policy_closed_loop(DIAGNOSIS, rounds=1, **self.WINDOW)
+        rd = res["rounds"][0]
+        self.assertTrue(rd["queue_constraint_respected"])
+        self.assertTrue(rd["adopted_as_best"], "a strictly better delay at equal queue must win")
+
     def test_zero_rounds_never_touches_the_model(self):
         agent = self._agent([(10.0, 80.0), (9.0, 80.0)])
         res = agent.optimize_control_policy_closed_loop(DIAGNOSIS, rounds=0, **self.WINDOW)
