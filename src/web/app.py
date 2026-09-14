@@ -652,9 +652,12 @@ async def baidu_driving_route(payload: BaiduRouteInput):
             resp.raise_for_status()
             body = resp.json()
     except Exception as e:
+        # Never echo provider exception text: httpx errors may include the full URL,
+        # including the server-side Baidu AK query parameter.
+        _ = e
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"百度路径规划调用失败: {str(e)}",
+            detail="百度路径规划调用失败，请稍后重试。",
         )
 
     if body.get("status") != 0:

@@ -246,9 +246,27 @@ function bindEventHandlers() {
   const incidentEndSlider = document.getElementById('incidentEndSlider');
   const incidentEndVal = document.getElementById('incidentEndVal');
 
+  function syncIncidentWindow() {
+    state.incidentStart = Math.max(0, Math.min(state.incidentStart, state.duration - 30));
+    state.incidentEnd = Math.min(state.duration, Math.max(state.incidentEnd, state.incidentStart + 30));
+    if (incidentStartSlider) {
+      incidentStartSlider.max = Math.min(300, state.duration - 30);
+      incidentStartSlider.value = state.incidentStart;
+    }
+    if (incidentEndSlider) {
+      incidentEndSlider.min = state.incidentStart + 30;
+      incidentEndSlider.max = state.duration;
+      incidentEndSlider.value = state.incidentEnd;
+    }
+    if (incidentStartVal) incidentStartVal.textContent = `${state.incidentStart}s`;
+    if (incidentEndVal) incidentEndVal.textContent = `${state.incidentEnd}s`;
+  }
+  syncIncidentWindow();
+
   if (durationSlider && durationVal) {
     durationSlider.addEventListener('input', (e) => {
       state.duration = parseInt(e.target.value);
+      syncIncidentWindow();
       durationVal.textContent = `${state.duration}s`;
       if (incidentEndSlider) {
         incidentEndSlider.max = state.duration;
@@ -264,6 +282,7 @@ function bindEventHandlers() {
   if (incidentStartSlider && incidentStartVal) {
     incidentStartSlider.addEventListener('input', (e) => {
       state.incidentStart = parseInt(e.target.value);
+      syncIncidentWindow();
       incidentStartVal.textContent = `${state.incidentStart}s`;
       if (incidentEndSlider && state.incidentEnd <= state.incidentStart) {
         state.incidentEnd = Math.min(state.duration, state.incidentStart + 30);
@@ -281,7 +300,7 @@ function bindEventHandlers() {
         e.target.value = val;
       }
       state.incidentEnd = val;
-      incidentEndVal.textContent = `${state.incidentEnd}s`;
+      syncIncidentWindow();
     });
   }
 
@@ -1094,7 +1113,7 @@ function renderMarkdownToHtml(markdown) {
 }
 
 function parseInlineMarkdown(text) {
-  let s = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  let s = escapeHtml(text).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
   s = s.replace(/`([^`]+)`/g, '<code class="report-code">$1</code>');
   return s;
@@ -1167,7 +1186,7 @@ function showToast(message, type = 'success') {
 
   const toast = document.createElement('div');
   toast.className = `toast ${type === 'error' ? 'error' : ''}`;
-  toast.innerHTML = `<span>${type === 'error' ? '⚠️' : '🚦'}</span> <span>${message}</span>`;
+  toast.innerHTML = `<span>${type === 'error' ? '⚠️' : '🚦'}</span> <span>${escapeHtml(message)}</span>`;
   container.appendChild(toast);
 
   setTimeout(() => {
