@@ -4,7 +4,7 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![CI-Build](https://github.com/zhutmg00-eng/TrafficAgent-DSS/actions/workflows/ci.yml/badge.svg)](https://github.com/zhutmg00-eng/TrafficAgent-DSS/actions)
 [![Simulation-SUMO](https://img.shields.io/badge/Simulation-SUMO%20%2F%20TraCI-brightgreen.svg)](https://eclipse.dev/sumo/)
-[![Tests-127%20Passed](https://img.shields.io/badge/Tests-127%20Passed%20(113%20Core%20%2B%2014%20E2E)-success.svg)](tests/)
+[![Tests-174%20Passed](https://img.shields.io/badge/Tests-174%20Passed%20(160%20Core%20%2B%2014%20E2E)-success.svg)](tests/)
 [![E2E-Playwright](https://img.shields.io/badge/E2E-Microsoft%20Playwright-blueviolet.svg)](https://playwright.dev/)
 [![Architecture-LLM%20Agent](https://img.shields.io/badge/Architecture-Single%20Agent%20%2B%20Deterministic%20Toolchain-orange.svg)](https://github.com/zhutmg00-eng/TrafficAgent-DSS)
 [![Baidu Map-LBS WebGL](https://img.shields.io/badge/Baidu%20Map-LBS%20WebGL-blue.svg)](https://lbsyun.baidu.com/)
@@ -40,10 +40,11 @@ flowchart TB
         A3["多预案 A/B 指标对比看板 (Radar & Metrics Chart)"]
     end
 
-    subgraph AgentCore ["决策大脑 (确定性工具链 + LLM 叙事层)"]
+    subgraph AgentCore ["决策大脑 (LLM 决策层 + 确定性工具链)"]
         B1["拥堵归因诊断 (Symptom & Bottleneck Reasoner)"]
-        B2["预案参数生成 (Deterministic Policy Params)"]
-        B3["量化评估与简报生成 (Evaluation & Briefing)"]
+        B2["控制参数决策 (LLM Policy Proposal)"]
+        B3["Schema 校验 + 物理约束裁剪 (Validate & Clip)"]
+        B4["量化评估与简报生成 (Evaluation & Briefing)"]
     end
 
     subgraph Tools ["交通工程专业工具箱 (Domain Tools)"]
@@ -63,6 +64,7 @@ flowchart TB
     UI <--> AgentCore
     AgentCore <--> Tools
     AgentCore <--> Simulation
+    Simulation -. "实测 KPI 回灌 · 闭环迭代" .-> B2
 ```
 
 ---
@@ -75,12 +77,20 @@ flowchart TB
    - 支持常规高峰流量标定，并可**一键注入突发事件（如事故占道、暴雨限速、潮汐车流激增）**。
    - > 📌 说明：当前路网为**抽象标定走廊**，尚不是从 OpenStreetMap 提取的真实 Beijing 区域路网；
    > 接入真实 OSM 数据列为后续工作。
-2. **交通智能体推理大脑（Agent Brain）**：
-   - 采用**确定性交通工程规则链**完成归因诊断与治理策略参数生成（Webster / 绿波 / VMS），
-     保证每个数值**可溯源、可复算**；大模型（LLM）层负责**可解释叙事与决策简报的文字组织**，
-     **不参与任何底层数值生成**（职责边界详见 §7.2）。
+2. **交通智能体决策大脑（Agent Brain）—— 两层结构，职责严格分离**：
+   - **交通工程工具层（数值权威）**：Webster 配时、干线绿波相位差、VMS 分流比例、
+     SUMO 微观仿真实测指标，全部由确定性工具链计算，每个数值**可溯源、可复算**。
+   - **大模型层（决策 + 叙事）**：
+     1. **控制参数决策**（v2.3.0 新增）：模型输出**周期 / 主路绿信比 / 诱导分流比例 /
+        绿波设计车速 / 是否协调**五个可下发控制变量，经 **Schema 校验 + 物理约束裁剪**
+        后才真正注入仿真器，并把仿真的**实测结果回灌**给模型进行多轮迭代
+        （闭环寻优，详见 §9.3）；
+     2. **归因叙事**：可解释的拥堵归因、方案说明、VMS 提示语与决策简报的文字组织。
+   - 🔴 **红线**：模型**任何时候都不产出性能数值** —— 延误 / 排队 / 通行量 / 碳排一律由仿真
+     实测。模型若在叙事或决策理由中引用**未经输入的数字**（如凭空的"延误下降 35%"），
+     该次输出会被**整份拒绝**并如实降级，绝不照发。
    - 推理层支持**运行时热切换大模型**（OpenAI 兼容端点，见 7.2 节），并在未配置或调用失败时
-     **显式降级**为确定性规则模板（输出中如实标注 `reasoning_mode`，不伪造结论）。
+     **显式降级**为确定性规则链路（输出中如实标注 `reasoning_mode` / `decision_mode`，不伪造结论）。
 3. **数字沙盘 A/B 对照推演（What-If Counterfactual Deduction）**：
    - 实时执行基线场景（无干预现状）与多种备选治理预案（如：纯信号优化 vs. 信号+诱导分流组合拳）的沙盒并行推演。
    - 毫秒级输出客观量化指标：
@@ -113,9 +123,10 @@ TrafficAgent-DSS/
 │   ├── fetch_osm_network.sh               # 一键抓取并编译真实路网脚本
 │   └── run_e2e.py                         # Playwright 前端 E2E 自动化测试一键运行脚本
 ├── src/                                   # 系统源码
-│   ├── agents/                            # LLM 智能体决策核心
+│   ├── agents/                            # 智能体决策核心（LLM 决策层 + 工具链编排）
 │   │   ├── llm_client.py                  # 大模型多后端统一调用与模型自动发现客户端
-│   │   └── traffic_agent.py               # 智能体核心逻辑、CoT归因诊断与决策简报生成
+│   │   ├── llm_decision.py                # 大模型控制参数决策层（Schema校验/物理约束裁剪/裁剪审计）
+│   │   └── traffic_agent.py               # 智能体核心：归因诊断、策略生成、闭环寻优、决策简报
 │   ├── data/                              # 路网拓扑与几何数据层
 │   │   └── network.py                     # OSM 真实路网数据模型（拓扑/几何/瓶颈选取）
 │   ├── simulation/                        # 交通仿真与数字孪生
@@ -143,11 +154,12 @@ TrafficAgent-DSS/
 │   ├── corridor.net.xml                   # 典型双通道干线路网拓扑
 │   ├── corridor.rou.xml                   # 高峰潮汐与突发事故交通需求
 │   └── corridor.sumocfg                   # SUMO 仿真配置文件
-├── tests/                                 # 自动化测试套件（全量 127 项测试 100% 通过）
+├── tests/                                 # 自动化测试套件（160 项单元/集成测试 + 14 项 E2E）
 │   ├── test_system.py                     # 交通工程算法、真实绿波与智能体推理单元测试 (46 项)
 │   ├── test_web_api.py                    # RESTful Web API、百度LBS与路由集成测试 (33 项)
 │   ├── test_network_mesoscopic.py         # 真实路网与中观仿真引擎专项测试 (10 项)
 │   ├── test_empirical_challenger_2.py     # 极限边界与鲁棒性挑战压力测试 (24 项)
+│   ├── test_llm_decision.py               # 大模型决策层：Schema校验/约束裁剪/闭环寻优 (47 项)
 │   └── e2e/                               # Playwright 浏览器端到端前端测试套件 (14 项)
 │       ├── conftest.py                    # 独立 FastAPI 后台测试服务 Fixture
 │       ├── test_core_ui.py                # 大屏基础渲染、主题切换与全景截图 (3 项)
@@ -169,12 +181,14 @@ TrafficAgent-DSS/
 - [x] **Step 2: 搭建基础路网与 SUMO 仿真沙盒**（已完成：`scenarios/` 走廊路网 + TraCI 沙盒，支持事故注入与限速还原）
 - [x] **Step 3: 核心智能体推理引擎与工具库开发**（已完成：大模型归因 + Webster/绿波/动态诱导工具库 + 诊断→策略→推演闭环）
 - [x] **Step 4: Web 决策大屏原型搭建**（已完成：FastAPI + 单页大屏，含方案下发与 A/B 效果对比图表）
-- [x] **Step 5: 端到端仿真复验与系统级鲁棒性加固**（已完成：SUMO 真实物理推演跑通，"协同 > 单点 > 基线"因果链闭环；全系统边界缺陷治理完成；实现多种子批量实验与 95% 置信区间统计评估；93 项单元测试与 GitHub Actions CI 100% 稳定通过）
+- [x] **Step 5: 端到端仿真复验与系统级鲁棒性加固**（已完成：SUMO 真实物理推演跑通，"协同 > 单点 > 基线"因果链闭环；全系统边界缺陷治理完成；实现多种子批量实验与 95% 置信区间统计评估；**160 项单元测试与 GitHub Actions CI 100% 稳定通过**）
+- [x] **Step 5.5: 大模型进入决策回路 + 参赛文实对齐**（已完成 v2.2.4 / v2.3.0：README 数字与实测报告逐项对齐；大模型由「只写文案」升级为「输出可下发控制参数」，配 Schema 校验、物理约束裁剪、数值溯源守卫与闭环迭代，详见 §9.3）
 - [ ] **Step 6: 成果材料撰写与包装**（推进中：完成《作品申报书》、6页《作品说明书》小论文、录制演示视频与答辩PPT）
 
-> ✅ **系统验证与工程质量认证**（2026-09-13 最新）：
-> - **测试覆盖**：`python -m unittest discover -s tests` 实测 **113 项测试**（46 项核心系统 + 33 项 Web API 与百度 LBS + 10 项中观拓扑 + 24 项实证压力测试）通过率 100%，GitHub Actions CI 自动化流水线（Python 3.10 / 3.12）全部通过（绿灯）；
-> - **统计可靠性**：新增 `POST /api/evaluate/multi-seed` 端点，物理仿真模式下支持多随机种子（Multi-Seed）并行推演，输出均值、标准误（SEM）与 95% 置信区间（CI）；非物理模式如实声明样本特征，杜绝人工伪造统计假象；
+> ✅ **系统验证与工程质量认证**（2026-09-14 最新）：
+> - **测试覆盖**：`pytest -q` 实测 **160 项通过**（原有 113 项 + 新增 47 项大模型决策层与闭环寻优），另 14 项 Playwright E2E 单独标记（`-m e2e`）运行；GitHub Actions CI 自动化流水线（Python 3.10 / 3.12）全部通过（绿灯）；
+> - **统计可靠性**：`POST /api/evaluate/multi-seed` 支持多随机种子并行推演，输出均值、标准误（SEM）与 95% 置信区间（CI）；**样本量不足（n<2）时不输出置信区间**，非物理模式如实声明样本特征，杜绝伪统计；
+> - **数据可信**：消融数据一律由 `experiments/ablation.py` 实测产出并随报告留档，README 引用的数值可由脚本复现（详见 §9.2 与 CHANGELOG 的 v2.2.4 文实对齐整改）；大模型输出的叙事与决策理由均受**数值溯源守卫**约束，引用了未经输入的数字会被**整份拒绝**；
 > - **系统健壮性**：涵盖 Webster 配时残差精准吸收、图解法公共交集真实绿波带宽计算、VMS 诱导防假触发与旁路 80% 熔断、SUMO 进程 5 秒僵尸超时清理及物理仿真缺失时的平滑高精度标定降级。完整更新记录详见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ---
@@ -195,7 +209,7 @@ uvicorn src.web.app:app --reload --port 8000
 
 ### 7.2 大模型（LLM）配置、自动识别与降级机制
 
-系统的**态势归因推理与方案叙事**由大语言模型（LLM）完成；**所有性能指标数值一律由经典交通工程工具算子与 SUMO 微观物理仿真严格计算得出**，大模型坚决不参与任何底层数值生成，杜绝“数字幻觉”。
+系统的**拥堵归因、控制参数决策与方案叙事**由大语言模型（LLM）完成；**所有性能指标数值一律由经典交通工程工具算子与 SUMO 微观物理仿真严格计算得出**，大模型**坚决不产出任何性能数值** —— 它给出的是「可下发的控制参数」与「文字」，效果一律由仿真实测（详见 §9.3），杜绝「数字幻觉」。
 
 #### 1. 类似 ccSwitch 的动态模型自动识别与一键热切换（推荐）
 
@@ -243,6 +257,7 @@ uvicorn src.web.app:app --reload --port 8000
   - `GET /api/detectors` —— 逐路段实时虚拟检测器排队与通行状态明细表；
   - `POST /api/action-plan` —— 生成直面交管一线、责任到人（交警/信号机/诱导屏）的 7 步操作作战清单；
   - `POST /api/rollout` —— 采用三级推演阶梯（SUMO 微观沙盒 $\rightarrow$ 真实路网中观引擎 $\rightarrow$ 标定基准兜底），明确在返回结构中如实声明推演引擎与数据来源，杜绝假装仿真。
+  - `POST /api/optimize/closed-loop` —— **大模型闭环控制策略寻优**（v2.3.0）：模型输出可下发控制参数 → 校验与物理裁剪 → 下发 SUMO 实测 → 实测结果回灌再决策，逐轮留审计（详见 §9.3）。
 - **前端数字化大屏增强**：新增“真实路网数字孪生矢量地图”、“行动指令清单”与“路网检测器全量明细表”三大核心区块。
 
 ---
@@ -287,6 +302,55 @@ uvicorn src.web.app:app --reload --port 8000
 - **单一手段的负面影响确有复现**：M1（仅 Webster）延误虽下降，但**最大排队反而升至 222.0 m**，与"单点优化在重度饱和瓶颈下把排队转移到下游"的机理解释一致。
 
 以上数据可由 `python experiments/ablation.py --seeds 42 101 2024 777 999` 一键复现（`--seeds` 以空格分隔；推演时长与事故窗口的默认值即 600s / 150–420s，与上表口径一致）；脚本在检测到非物理沙盒（网络接口伪造 / 缺 `net.xml`）时会直接中止，不会产出降级或估算结果。
+
+### 9.3 大模型闭环控制策略寻优（LLM-in-the-Loop, v2.3.0）
+
+9.2 的消融实验回答的是「**固定的**控制策略能带来什么」；本节回答另一个问题：
+**大模型能不能自己做出控制决策，并且被实测验证**。
+
+```text
+   ① 诊断（检测器实测 → 瓶颈归因）
+        │
+        ▼
+   ② 决策（LLM 输出 5 个控制变量：周期 / 主路绿信比 / 分流比例 / 绿波设计车速 / 协调开关）
+        │
+        ▼
+   ③ 治理（Schema 校验 → 物理约束裁剪 → 全程留审计）
+        │
+        ▼
+   ④ 实测（参数下发 SUMO，实测延误 / 排队 / 通行量 / 碳排）
+        │
+        └──── 实测结果回灌 ────▶ 回到 ②（下一轮迭代）
+```
+
+**三道安全闸门**（任一不通过都不会有未经验证的参数进入仿真器）：
+
+| 闸门 | 作用 | 不通过时 |
+|:--|:--|:--|
+| **Schema 校验** | 缺字段、NaN/Inf、`coordinated` 非布尔、理由为空 | 整份提案作废 |
+| **物理约束裁剪** | 周期 60–120s、主路绿信比 0.50–0.82、分流 ≤40% 且不超旁路余量、绿波车速 30–60 km/h；支路最小绿 ≥10s、主路最小绿 ≥20s | 逐项裁剪，并记录 `requested / applied / reason` |
+| **数值溯源守卫** | 模型引用的每个数字必须能回溯到喂给它的输入 | 整份提案被拒（不照发） |
+
+**择优与裁决**：
+
+- 以**实测平均延误**为准择优，必须胜过现任最优才被采纳；
+- **排队劣化超过基线 25% 的轮次直接弃用** —— 不允许「拿排队换延误」；
+- 若所有候选方案（含最优者）都不优于无干预基线，输出
+  `do_nothing_is_better_under_measured_conditions` 并明确写「不建议下发控制指令」——
+  **绝不把一个「相对最好」的方案包装成推荐方案**。
+
+**调用方式**：`POST /api/optimize/closed-loop`。
+`rounds` = 大模型决策轮数（`0` = 只跑确定性规则链、完全不调用大模型；上限 4）。
+
+**实证状态（诚实说明）**：
+
+离线端到端验证使用**本地 mock 大模型**（在配置了真实 API Key 的环境下换用真实模型即可，决策逻辑不变），
+已确认三件事：① 模型请求的参数与实际下发到 SUMO 的参数**逐项一致**（含裁剪审计为空）；
+② 第 2 轮 prompt 中确实携带了第 1 轮的**实测量化反馈**（闭环成立，非纸面功能）；
+③ 无模型可用时如实降级为确定性规则链并标注 `decision_mode`，不迭代也不编造。
+
+> ⚠️ 该验证使用的 `duration=300s / 事故窗口 75–210s` 属**非标定短工况**，且为单种子单次运行，
+> 其数值**不构成任何性能结论**。标定工况（600s / 150–420s）与多种子条件下的闭环增益评估仍在进行中。
 
 ---
 

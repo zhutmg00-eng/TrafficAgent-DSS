@@ -34,6 +34,14 @@ CORRIDOR_ARTERIAL_LANES = 3
 CORRIDOR_SATURATION_FLOW_PER_LANE_PCU_H = 1800
 CORRIDOR_DESIGN_CAPACITY_PCU_H = CORRIDOR_ARTERIAL_LANES * CORRIDOR_SATURATION_FLOW_PER_LANE_PCU_H
 
+# Upstream demand arriving at the bottleneck and the spare capacity of the northern
+# parallel bypass, both taken from the calibrated corridor demand profile. They bound
+# how much traffic VMS diversion can physically move (alpha <= spare / upstream) and are
+# declared once here so the toolchain, the closed-loop optimiser and the LLM decision
+# layer all quote the same numbers.
+CORRIDOR_UPSTREAM_FLOW_VPH = 1800.0
+CORRIDOR_BYPASS_SPARE_CAPACITY_VPH = 1200.0
+
 
 def _safe_float(val: Any, default: float, min_val: Optional[float] = None, max_val: Optional[float] = None) -> float:
     """Extracts a finite float defending against None, NaN, and Inf, bounded by min/max."""
@@ -80,6 +88,12 @@ from src.tools.rerouting import DynamicReroutingAllocator
 from src.tools.evaluator import PerformanceEvaluator
 from src.simulation.sumo_sandbox import SumoSimulationSandbox
 from src.agents.llm_client import LLMReasoningClient
+from src.agents.llm_decision import (
+    HARD_CYCLE_MAX_S,
+    HARD_CYCLE_MIN_S,
+    LLMDecisionLayer,
+    POLICY_BOUNDS,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -141,6 +155,10 @@ class TrafficDecisionAgent:
         self.rerouter = DynamicReroutingAllocator()
         self.evaluator = PerformanceEvaluator()
         self.llm = LLMReasoningClient()
+        # Decision layer: lets the model propose *control variables* (validated and
+        # clipped into the feasible domain) instead of only describing them. Shares
+        # the same LLM client, so hot-swapping the model also swaps the decision engine.
+        self.decision = LLMDecisionLayer(self.llm)
 
     # ------------------------------------------------------------------ #
     # Dynamic LLM Configuration
@@ -267,7 +285,11 @@ class TrafficDecisionAgent:
                     return False
         return True
 
-    def _tool_plan(self, diagnosis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _tool_plan(
+        self,
+        diagnosis: Optional[Dict[str, Any]] = None,
+        policy: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
         Shared deterministic traffic-engineering computation for the J1-J3 corridor.
 
@@ -276,6 +298,13 @@ class TrafficDecisionAgent:
         actually respond to the observed incident instead of a frozen scenario constant.
         Only the phase-level demand split remains a corridor calibration constant, because
         a single cross-section detector cannot resolve per-approach flows.
+
+        `policy` is an optional control-policy overlay produced by the LLM decision layer
+        (`src/agents/llm_decision.py`), already schema-validated and clipped into the
+        feasible domain. It may override the design cycle, the arterial green share, the
+        green-wave progression speed and the diversion ratio. **When it is None this
+        function behaves exactly as the purely deterministic chain always has**, so
+        existing callers and previously reported numbers are unaffected.
         """
         state = (diagnosis or {}).get("input_state") or {}
 
@@ -314,6 +343,25 @@ class TrafficDecisionAgent:
         # shorten within the min/max bounds.
         design_cycle = min(120.0, max(60.0, round(timing["optimal_cycle"] * 2.0)))
 
+        # ---- Optional LLM policy overlay ------------------------------------- #
+        # Each hook below is a *no-op* unless the policy carries that variable, so a
+        # policy of {} reproduces the deterministic result bit for bit.
+        policy = policy or {}
+
+        def _policy_number(name: str) -> Optional[float]:
+            value = policy.get(name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            return float(value) if math.isfinite(float(value)) else None
+
+        policy_cycle = _policy_number("target_cycle_s")
+        if policy_cycle is not None:
+            design_cycle = min(HARD_CYCLE_MAX_S, max(HARD_CYCLE_MIN_S, policy_cycle))
+
+        policy_share = _policy_number("arterial_green_share")
+        policy_speed_kmh = _policy_number("progression_speed_kmh")
+        policy_reroute = _policy_number("reroute_ratio")
+
         # Re-allocate green times within the design cycle using Webster's flow ratios.
         y_main = timing["flow_ratios"][0]
         y_cross = timing["flow_ratios"][1]
@@ -322,7 +370,10 @@ class TrafficDecisionAgent:
         # Ensure cross street maintains at least 10s minimum green for pedestrian and side-street clearance
         min_cross = 10.0
         max_arterial = available_green - min_cross
-        raw_arterial = available_green * y_main / y_sum
+        raw_arterial = (
+            available_green * policy_share if policy_share is not None
+            else available_green * y_main / y_sum
+        )
         arterial_green = round(max(20.0, min(max_arterial, raw_arterial)), 1)
         cross_green = round(available_green - arterial_green, 1)
 
@@ -333,16 +384,40 @@ class TrafficDecisionAgent:
             intersection_distances=[300.0, 300.0],
             cycle_length=actual_cycle,
             green_splits_arterial=[arterial_green, arterial_green, arterial_green],
-            progression_speed=13.89,  # 50 km/h
+            progression_speed=(
+                policy_speed_kmh / 3.6 if policy_speed_kmh is not None else 13.89  # 50 km/h default
+            ),
         )
         reroute_plan = self.rerouter.calculate_diversion(
             bottleneck_queue_meters=queue_m,
             bottleneck_link_length=link_len,
             bottleneck_occupancy=occupancy,
-            upstream_flow_vph=1800.0,
+            upstream_flow_vph=CORRIDOR_UPSTREAM_FLOW_VPH,
             bypass_current_occupancy=bypass_occ,
-            bypass_spare_capacity_vph=1200.0,
+            bypass_spare_capacity_vph=CORRIDOR_BYPASS_SPARE_CAPACITY_VPH,
         )
+        if policy_reroute is not None:
+            # Deploy the externally decided ratio, re-deriving the derived fields and the
+            # VMS copy so the published advisory matches what actually reaches SUMO.
+            reroute_plan = self.rerouter.apply_diversion_override(
+                reroute_plan,
+                diversion_ratio=policy_reroute,
+                upstream_flow_vph=CORRIDOR_UPSTREAM_FLOW_VPH,
+                bottleneck_queue_meters=queue_m,
+                bypass_spare_capacity_vph=CORRIDOR_BYPASS_SPARE_CAPACITY_VPH,
+            )
+
+        policy_overlay = {
+            "source": "llm_decision_layer" if policy else "deterministic_rule_chain",
+            "applied": {
+                "target_cycle_s": policy_cycle,
+                "arterial_green_share": policy_share,
+                "progression_speed_kmh": policy_speed_kmh,
+                "reroute_ratio": policy_reroute,
+                "coordinated": policy.get("coordinated"),
+            } if policy else None,
+            "rationale": policy.get("decision_rationale"),
+        }
         return {
             "timing": timing,
             "green_wave": gw_plan,
@@ -351,6 +426,7 @@ class TrafficDecisionAgent:
             "cross_green": cross_green,
             "yellow_time": yellow_time,
             "actual_cycle": actual_cycle,
+            "policy_overlay": policy_overlay,
             # Ready-to-deploy signal program: Webster-ratio baseline within the corrected
             # design cycle. `type=actuated` keeps the adaptive min/max-green behaviour the
             # incident scenario depends on; `first_green_start` is filled in per strategy
@@ -379,6 +455,8 @@ class TrafficDecisionAgent:
                 "bypass_occupancy": bypass_occ,
                 "phase_flows_pcu_h": phase_flows,
                 "phase_lanes": phase_lanes,
+                "upstream_flow_vph": CORRIDOR_UPSTREAM_FLOW_VPH,
+                "bypass_spare_capacity_vph": CORRIDOR_BYPASS_SPARE_CAPACITY_VPH,
             },
         }
 
@@ -920,6 +998,7 @@ class TrafficDecisionAgent:
         use_webster: bool = True,
         diagnosis: Optional[Dict[str, Any]] = None,
         seed: Optional[int] = None,
+        policy: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Executes parallel What-If rollouts in SUMO for Baseline, Strategy A, and Strategy B,
@@ -950,9 +1029,16 @@ class TrafficDecisionAgent:
             except (ValueError, TypeError) as err:
                 raise ValueError(f"Invalid random seed: {seed} ({err})")
 
-        plan = self._tool_plan(diagnosis)
+        plan = self._tool_plan(diagnosis, policy=policy)
         gw_plan = plan["green_wave"]
         reroute_ratio = plan["reroute"]["diversion_ratio"] if use_rerouting else 0.0
+
+        # A valid policy may also decide *whether* to coordinate; when it is silent
+        # the caller's switch governs, exactly as before.
+        policy_coordinated = None
+        if policy and isinstance(policy.get("coordinated"), bool):
+            policy_coordinated = policy["coordinated"]
+        green_wave_active = use_green_wave if policy_coordinated is None else policy_coordinated
 
         # Signal programs deployed (once) by the simulator for the two actuated strategies.
         # Both use the same Webster timing aligned with the network's two release phases;
@@ -1015,10 +1101,10 @@ class TrafficDecisionAgent:
             "agent_dss",
             {
                 "signal_program": (
-                    program_coordinated if use_green_wave else program_uncoordinated
+                    program_coordinated if green_wave_active else program_uncoordinated
                 ),
                 "reroute_ratio": reroute_ratio,
-                "green_wave": use_green_wave,
+                "green_wave": green_wave_active,
                 "webster": use_webster,
             },
         )
@@ -1177,6 +1263,325 @@ class TrafficDecisionAgent:
             "summary_by_scheme": summary,
             "strategy_b_improvements": b_improvements,
             "statistically_significant": statistically_significant,
+        }
+
+    # ------------------------------------------------------------------ #
+    # 3b. Closed-loop control-policy optimisation (LLM inside the loop)
+    # ------------------------------------------------------------------ #
+    MAX_CLOSED_LOOP_ROUNDS = 4
+
+    # A candidate round is discarded when it buys delay reduction by dumping queue
+    # onto the corridor: the project's governance goal is not "minimise one metric".
+    QUEUE_BLOWUP_RATIO = 1.25
+
+    def optimize_control_policy_closed_loop(
+        self,
+        diagnosis: Dict[str, Any],
+        rounds: int = 2,
+        duration: int = 600,
+        incident_start: int = 150,
+        incident_end: int = 420,
+        seed: Optional[int] = None,
+        use_rerouting: bool = True,
+        use_webster: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Puts the LLM **inside the control loop** and measures what happens.
+
+        Round k sends the model: the detector state, the deterministic toolchain
+        baseline, and — from round 2 onward — the *measured* KPI delta of its own
+        previous decision. The model returns a new parameter set. Every parameter set
+        is schema-validated and clipped into the feasible domain before deployment, and
+        the outcome is measured by SUMO, never predicted by the model.
+
+        Honest degradation: when no usable proposal exists (model unconfigured, SDK
+        missing, unreachable, schema-invalid, or a rationale that quoted numbers the
+        tools never produced) the loop stops and the deterministic result stands, with
+        `decision_mode = deterministic_rule_chain` and the reason recorded. No
+        "optimised" figure is ever invented to fill the gap.
+
+        Returns a fully auditable trace: per round, what the model requested, what was
+        actually deployed after clipping, why anything was clipped, and the measured KPI.
+        """
+        total_requested = int(rounds) if isinstance(rounds, (int, float)) and not isinstance(rounds, bool) else 1
+        total_rounds = max(0, min(self.MAX_CLOSED_LOOP_ROUNDS, total_requested))
+
+        # ---- sandbox plumbing (mirrors execute_what_if_rollout) ------------- #
+        try:
+            supports_seed = "seed" in inspect.signature(self.sandbox.run_simulation).parameters
+        except (TypeError, ValueError):  # pragma: no cover - exotic callables
+            supports_seed = False
+        safe_seed = (
+            int(seed) if isinstance(seed, (int, float)) and not isinstance(seed, bool) else None
+        )
+
+        def _sim(scheme: str, controls: Dict[str, Any]) -> Dict[str, Any]:
+            kwargs: Dict[str, Any] = dict(
+                scheme=scheme,
+                duration=duration,
+                incident_start=incident_start,
+                incident_end=incident_end,
+                control_params=controls,
+            )
+            if supports_seed:
+                kwargs["seed"] = safe_seed
+            return self.sandbox.run_simulation(**kwargs)
+
+        def _controls_from_plan(plan: Dict[str, Any], coordinated: bool) -> Dict[str, Any]:
+            program = dict(
+                plan["signal_program"],
+                first_green_start=(
+                    list(plan["green_wave"]["offsets"]) if coordinated else [0.0, 0.0, 0.0]
+                ),
+            )
+            return {
+                "signal_program": program,
+                "reroute_ratio": plan["reroute"]["diversion_ratio"] if use_rerouting else 0.0,
+                "green_wave": coordinated,
+                "webster": use_webster,
+            }
+
+        print("[Agent] Closed-loop 1/3: baseline (do-nothing) rollout...")
+        base_kpi = self.evaluator.compute_summary_kpi(
+            _sim("baseline", {"reroute_ratio": 0.0, "green_wave": False, "webster": False})
+        )
+
+        det_plan = self._tool_plan(diagnosis)
+        print("[Agent] Closed-loop 2/3: deterministic rule-chain reference rollout...")
+        det_kpi = self.evaluator.compute_summary_kpi(
+            _sim("agent_dss", _controls_from_plan(det_plan, True))
+        )
+
+        def _delay_of(kpi: Dict[str, Any]) -> Optional[float]:
+            v = (kpi or {}).get("avg_delay_s")
+            return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+        baseline_queue = (base_kpi or {}).get("max_queue_m")
+        baseline_queue = float(baseline_queue) if isinstance(baseline_queue, (int, float)) else None
+
+        # The deterministic result is the incumbent; a round must beat it to be adopted.
+        best: Dict[str, Any] = {
+            "source": "deterministic_rule_chain",
+            "round": 0,
+            "policy": None,
+            "plan": det_plan,
+            "kpi": det_kpi,
+            "delay_s": _delay_of(det_kpi),
+        }
+
+        round_trace: List[Dict[str, Any]] = []
+        feedback: Optional[Dict[str, Any]] = None
+        decision_errors: List[str] = []
+        decision_engine = "deterministic_rule_chain"
+        decision_mode = "deterministic_rule_chain"
+
+        corridor_inputs = det_plan.get("inputs_used") or {}
+        upstream_vph = float(corridor_inputs.get("upstream_flow_vph") or 1800.0)
+        bypass_spare_vph = float(corridor_inputs.get("bypass_spare_capacity_vph") or 1200.0)
+        reroute_capacity_cap = min(
+            POLICY_BOUNDS["reroute_ratio"][1],
+            bypass_spare_vph / max(1.0, upstream_vph),
+        )
+
+        detector_state = (diagnosis or {}).get("input_state") or {}
+
+        for idx in range(1, total_rounds + 1):
+            context: Dict[str, Any] = {
+                "round_index": idx,
+                "max_rounds": total_rounds,
+                "diagnosis": {
+                    "bottleneck_location": diagnosis.get("bottleneck_location"),
+                    "severity_level": diagnosis.get("severity_level"),
+                    "spillback_risk": diagnosis.get("spillback_risk"),
+                    "root_causes": diagnosis.get("root_causes", []),
+                },
+                "detector_state": {
+                    "queue_m": detector_state.get("queue_m"),
+                    "link_length_m": detector_state.get("link_length_m"),
+                    "occupancy": detector_state.get("occupancy"),
+                    "bypass_occupancy": detector_state.get("bypass_occupancy"),
+                    "queue_ratio": round(
+                        float(detector_state.get("queue_m", 0.0) or 0.0)
+                        / max(1.0, float(detector_state.get("link_length_m", 1.0) or 1.0)),
+                        3,
+                    ),
+                },
+                "baseline_plan": {
+                    "design_cycle_s": det_plan["actual_cycle"],
+                    "arterial_green_s": det_plan["arterial_green"],
+                    "cross_green_s": det_plan["cross_green"],
+                    "yellow_s": det_plan["yellow_time"],
+                    "green_wave_offsets_s": det_plan["green_wave"]["offsets"],
+                    "green_wave_bandwidth_ratio_pct": det_plan["green_wave"]["bandwidth_ratio_percent"],
+                    "progression_speed_kmh": det_plan["green_wave"]["progression_speed_kmh"],
+                    "reroute_ratio": det_plan["reroute"]["diversion_ratio"],
+                    "reroute_capacity_cap": round(reroute_capacity_cap, 4),
+                    "corridor_defaults_from": corridor_inputs.get("source"),
+                },
+                "feedback": feedback,
+            }
+
+            proposal = self.decision.propose(context)
+            applied = proposal.get("applied")
+            decision_engine = proposal.get("engine") or decision_engine
+
+            if applied is None:
+                # Stop the loop and keep whatever was already measured. The caller can
+                # read `errors` to see exactly why the model could not be used.
+                decision_errors = list(proposal.get("errors") or ["no deployable policy"])
+                print(f"[Agent] Closed-loop round {idx}: no deployable policy -> {decision_errors}")
+                break
+
+            policy = {
+                "target_cycle_s": applied["target_cycle_s"],
+                "arterial_green_share": applied["arterial_green_share"],
+                "reroute_ratio": applied["reroute_ratio"],
+                "progression_speed_kmh": applied["progression_speed_kmh"],
+                "coordinated": applied["coordinated"],
+                "decision_rationale": applied.get("decision_rationale", ""),
+            }
+            plan = self._tool_plan(diagnosis, policy=policy)
+            print(f"[Agent] Closed-loop round {idx}: deploying model-decided policy to SUMO...")
+            kpi = self.evaluator.compute_summary_kpi(
+                _sim("agent_dss", _controls_from_plan(plan, applied["coordinated"]))
+            )
+            comparison = self.evaluator.compare_schemes(base_kpi, kpi)
+            delay_s = _delay_of(kpi)
+
+            queue_m = kpi.get("max_queue_m")
+            queue_ok = True
+            if (
+                isinstance(queue_m, (int, float)) and not isinstance(queue_m, bool)
+                and baseline_queue is not None and baseline_queue > 0
+                and float(queue_m) > baseline_queue * self.QUEUE_BLOWUP_RATIO
+            ):
+                queue_ok = False
+
+            adopted = False
+            if delay_s is not None and queue_ok:
+                incumbent = best.get("delay_s")
+                if incumbent is None or delay_s < float(incumbent):
+                    adopted = True
+                    best = {
+                        "source": "llm_decision_layer",
+                        "round": idx,
+                        "policy": policy,
+                        "plan": plan,
+                        "kpi": kpi,
+                        "delay_s": delay_s,
+                    }
+
+            round_trace.append({
+                "round": idx,
+                "decision_mode": proposal.get("mode"),
+                "decision_engine": proposal.get("engine"),
+                "model_requested": proposal.get("requested"),
+                "deployed_after_clipping": applied,
+                "clipping_adjustments": proposal.get("adjustments") or [],
+                "rationale": proposal.get("rationale"),
+                "measured_kpi": kpi,
+                "vs_baseline_pct": {
+                    k: comparison.get(k) for k in (
+                        "delay_improvement_pct",
+                        "queue_improvement_pct",
+                        "throughput_improvement_pct",
+                        "co2_improvement_pct",
+                        "speed_improvement_pct",
+                    )
+                },
+                "queue_constraint_respected": queue_ok,
+                "adopted_as_best": adopted,
+            })
+
+            if proposal.get("mode") == LLMReasoningClient.MODE_LLM:
+                decision_mode = "llm_closed_loop"
+
+            # Feed the *measured* outcome back for the next round.
+            feedback = {
+                "round": idx,
+                "applied_policy": {
+                    "target_cycle_s": applied["target_cycle_s"],
+                    "arterial_green_share": applied["arterial_green_share"],
+                    "reroute_ratio": applied["reroute_ratio"],
+                    "progression_speed_kmh": applied["progression_speed_kmh"],
+                    "coordinated": applied["coordinated"],
+                },
+                "kpi_delta": round_trace[-1]["vs_baseline_pct"],
+                "measured": {
+                    "avg_delay_s": kpi.get("avg_delay_s"),
+                    "max_queue_m": kpi.get("max_queue_m"),
+                    "throughput_vph": kpi.get("throughput_vph"),
+                },
+                "adopted": adopted,
+            }
+
+        best_plan = best["plan"]
+        best_controls = best_plan.get("policy_overlay", {}).get("applied")
+
+        # Verdict — an "optimal" plan that still loses to doing nothing must say so.
+        # Reporting it as the recommended action without this flag would be exactly the
+        # kind of output-vs-fact mismatch this project treats as a red line.
+        best_delay = _delay_of(best["kpi"])
+        base_delay = _delay_of(base_kpi)
+        beats_baseline = (
+            best_delay is not None and base_delay is not None and best_delay < base_delay
+        )
+        if beats_baseline:
+            verdict = "adopt_best_policy"
+            verdict_note = (
+                f"最优方案实测平均延误 {best_delay:.1f} s/veh 低于无干预基线 {base_delay:.1f} s/veh，建议下发。"
+            )
+        else:
+            verdict = "do_nothing_is_better_under_measured_conditions"
+            verdict_note = (
+                "本次推演中所有候选方案（含最优者）的实测平均延误均不低于无干预基线 —— "
+                "系统不建议下发控制指令。该结论仅对应本次推演的工况与随机种子；"
+                "如需用于决策，请改用标定工况（600s 推演 / 事故窗口 150–420s）并做多种子复验。"
+            )
+
+        return {
+            "execution_mode": "physical_sumo_sandbox",
+            "simulation_duration": duration,
+            "seed": seed,
+            "decision_mode": decision_mode,
+            "decision_engine": decision_engine,
+            "decision_errors": decision_errors,
+            "rounds_requested": total_requested,
+            "rounds_executed": len(round_trace),
+            "corridor_inputs": corridor_inputs,
+            "baseline_kpi": base_kpi,
+            "deterministic_kpi": det_kpi,
+            "deterministic_vs_baseline_pct": self.evaluator.compare_schemes(base_kpi, det_kpi),
+            "rounds": round_trace,
+            "recommendation": {
+                "verdict": verdict,
+                "adopt_control": beats_baseline,
+                "note": verdict_note,
+                "best_avg_delay_s": best_delay,
+                "baseline_avg_delay_s": base_delay,
+            },
+            "best": {
+                "source": best["source"],
+                "round": best["round"],
+                "policy": best["policy"],
+                "applied_control_parameters": {
+                    "cycle_s": best_plan["actual_cycle"],
+                    "arterial_green_s": best_plan["arterial_green"],
+                    "cross_green_s": best_plan["cross_green"],
+                    "yellow_s": best_plan["yellow_time"],
+                    "green_wave_offsets_s": best_plan["green_wave"]["offsets"],
+                    "green_wave_bandwidth_ratio_pct": best_plan["green_wave"]["bandwidth_ratio_percent"],
+                    "progression_speed_kmh": best_plan["green_wave"]["progression_speed_kmh"],
+                    "reroute_ratio": best_plan["reroute"]["diversion_ratio"],
+                    "coordinated": (
+                        (best_controls or {}).get("coordinated")
+                        if best_controls else True
+                    ),
+                    "policy_source": best_plan.get("policy_overlay", {}).get("source"),
+                },
+                "measured_kpi": best["kpi"],
+                "vs_baseline_pct": self.evaluator.compare_schemes(base_kpi, best["kpi"]),
+            },
         }
 
     # ------------------------------------------------------------------ #

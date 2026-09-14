@@ -81,7 +81,7 @@ for _ext, _type in (
 ):
     mimetypes.add_type(_type, _ext)
 
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.3.0"
 DEFAULT_DASHBOARD_PORT = 8501
 
 # Application initialization
@@ -195,6 +195,31 @@ class ReportExportInput(BaseModel):
 class DecisionPipelineInput(BaseModel):
     traffic_state: Optional[TrafficStateInput] = None
     rollout_config: Optional[RolloutConfigInput] = None
+
+
+class ClosedLoopOptimizationInput(BaseModel):
+    """
+    Input for the LLM-in-the-loop control optimisation endpoint.
+
+    `rounds` counts **model** decision rounds. 0 means "run the deterministic rule
+    chain only" — useful for getting the reference result without calling a model at all.
+    """
+    traffic_state: Optional[TrafficStateInput] = None
+    rounds: int = Field(default=2, ge=0, le=4, description="大模型闭环决策轮数（0 = 仅确定性规则链，不调用大模型）")
+    duration: int = Field(default=600, ge=300, le=1200, description="单次推演时长 (秒)")
+    incident_start: int = Field(default=150, ge=0, le=1200, description="事故开始时间 (秒)")
+    incident_end: int = Field(default=420, ge=0, le=1800, description="事故撤离时间 (秒)")
+    seed: Optional[int] = Field(default=None, ge=0, description="随机种子 (用于可复现仿真)")
+    use_rerouting: bool = Field(default=True, description="是否允许闭环策略使用动态诱导分流")
+    use_webster: bool = Field(default=True, description="是否允许闭环策略使用 Webster 信号配时")
+
+    @model_validator(mode="after")
+    def validate_window(self):
+        if self.incident_start >= self.incident_end:
+            raise ValueError(f"事故开始时间 ({self.incident_start}s) 必须早于事故撤离时间 ({self.incident_end}s)")
+        if self.incident_end > self.duration:
+            raise ValueError(f"事故撤离时间 ({self.incident_end}s) 不能超出推演总时长 ({self.duration}s)")
+        return self
 
 
 class LLMDetectModelsInput(BaseModel):
@@ -1209,6 +1234,61 @@ def execute_full_decision_pipeline(payload: Optional[DecisionPipelineInput] = No
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Decision pipeline error: {str(e)}"
+        )
+
+
+@app.post("/api/optimize/closed-loop", summary="大模型闭环控制策略寻优（LLM 进入决策回路）")
+def optimize_closed_loop(payload: Optional[ClosedLoopOptimizationInput] = None):
+    """
+    Closed-loop control optimisation with the LLM *inside* the decision path.
+
+    Each round the model receives the detector state, the deterministic toolchain
+    baseline, and the measured KPI delta of its own previous decision, then returns a
+    control parameter set (cycle / arterial green share / diversion ratio / progression
+    speed / coordination flag). Every set is schema-validated and clipped into the
+    corridor's feasible domain before deployment, and the effect is measured by SUMO —
+    never predicted by the model.
+
+    Degradation is explicit: with no usable model the loop does not run and the
+    deterministic result is returned together with `decision_mode =
+    deterministic_rule_chain` and the reason, rather than a fabricated "optimised" figure.
+
+    Note this endpoint is a synchronous `def`, so FastAPI runs it in a worker thread —
+    it never blocks the event loop while SUMO subprocesses are executing.
+    """
+    try:
+        cfg = payload or ClosedLoopOptimizationInput()
+        state_dict = (cfg.traffic_state or TrafficStateInput()).model_dump()
+        diagnosis = agent.diagnose_bottleneck(state_dict)
+        result = agent.optimize_control_policy_closed_loop(
+            diagnosis,
+            rounds=cfg.rounds,
+            duration=cfg.duration,
+            incident_start=cfg.incident_start,
+            incident_end=cfg.incident_end,
+            seed=cfg.seed,
+            use_rerouting=cfg.use_rerouting,
+            use_webster=cfg.use_webster,
+        )
+        return {
+            "success": True,
+            "traffic_state": state_dict,
+            "diagnosis": {
+                "bottleneck_location": diagnosis.get("bottleneck_location"),
+                "severity_level": diagnosis.get("severity_level"),
+                "root_causes": diagnosis.get("root_causes", []),
+                "reasoning_mode": diagnosis.get("reasoning_mode"),
+            },
+            **result,
+        }
+    except HTTPException:
+        raise
+    except (ValueError, TypeError) as ve:
+        raise HTTPException(status_code=422, detail=f"闭环寻优参数校验失败: {str(ve)}")
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Closed-loop optimisation error: {str(e)}",
         )
 
 

@@ -9,6 +9,73 @@
 
 ---
 
+## [2026-09-14] v2.3.0：P1 技术升级 —— 大模型进入决策回路（闭环控制策略寻优）
+
+**主题**：竞品对标与自查都指向同一个结构性问题：**大模型只写文案、不在决策路径上**（`formulate_candidate_strategies` 里先由工具链算好全部数值，模型只被允许"描述"它们），且整条流水线是**开环单轮**（诊断 → 策略 → 推演 → 报告，没有反馈回路）。本次把 LLM 放进控制回路：它输出的不再是描述，而是**可下发的控制参数**；系统据此跑 SUMO，把**实测结果回灌**给模型再决策，全程留审计。
+
+**影响文件**：`src/agents/llm_decision.py`（新增）、`src/agents/traffic_agent.py`、`src/tools/rerouting.py`、`src/web/app.py`、`tests/test_llm_decision.py`（新增）、`README.md`、`CHANGELOG.md`
+
+**兼容性**：向后兼容。所有新能力都是**可选路径** —— `_tool_plan(policy=None)` 与既有确定性行为逐字一致（有专门测试守住这一点），`/api/decide`、`/api/rollout` 等既有端点行为不变。API 版本 `2.2.1 → 2.3.0`（此前 v2.2.2 / v2.2.3 两次提交都漏改该常量，一并修正）。
+
+---
+
+### 一、新增 LLM 决策层 `src/agents/llm_decision.py`
+
+- 模型输出 **5 个控制变量**：`target_cycle_s` / `arterial_green_share` / `reroute_ratio` / `progression_speed_kmh` / `coordinated`
+- **schema 校验**：缺字段、非有限数（NaN/Inf）、`coordinated` 非布尔、rationale 为空 → 整份提案作废
+- **物理约束裁剪**：周期 60–120s（硬轨 45–180s）、绿信比 0.50–0.82、分流比例 0–0.40 且不超过**旁路剩余容量**折算上限、绿波速度 30–60 km/h；同时保证支路最小绿 ≥10s、主路最小绿 ≥20s
+- **裁剪审计**：每项变动记录 `requested` / `applied` / `reason`，评审可逐项复核「模型想要什么 vs 实际下发什么」
+- **数值溯源守卫**：rationale 里出现的数字必须可回溯到我们喂给它的输入（沿用叙事层既有的红线）。模型若编造「预计延误下降 35%」，**整份提案被拒**，而不是照发
+
+### 二、闭环迭代 `optimize_control_policy_closed_loop()`
+
+- 轮次结构：`baseline`（无干预）→ `deterministic`（确定性规则链基准）→ LLM 第 1..N 轮
+- **每轮把上一轮的实测量化反馈写回 prompt**（延误 / 排队 / 通行量的相对变化），模型据此修正参数
+- **择优采纳**：以实测平均延误为准，必须胜过现任最优才被采纳；**排队劣化超过基线 25% 的轮次直接弃用**（不允许「拿排队换延误」）
+- **裁决字段 `recommendation`**：若所有候选方案（含最优者）的实测延误都不低于无干预基线，明确输出 `do_nothing_is_better_under_measured_conditions` 并说明「不建议下发控制指令」—— 避免把一个「相对最好」的方案包装成推荐方案
+
+### 三、新端点
+
+- `POST /api/optimize/closed-loop`：`rounds=0` 即纯确定性路径（完全不调用大模型），便于做对照与离线复验
+
+### 四、工程配套
+
+- `DynamicReroutingAllocator.apply_diversion_override()`：外部决策覆盖分流比例时，同步重算 `diverted_flow_vph` 与 VMS 文案，保证**公示的诱导信息与真正下发的动作一致**（分流为 0 时不会再挂着「建议绕行」）
+- 走廊常量单一来源化（`CORRIDOR_UPSTREAM_FLOW_VPH` / `CORRIDOR_BYPASS_SPARE_CAPACITY_VPH`），工具链与决策层不再各写一份字面量
+- 修正 `APP_VERSION`（`/api/status` 此前一直报 2.2.1）
+
+### 五、验证
+
+**单元测试**：`pytest -q` → **160 passed, 14 deselected**（原有 113 + 新增 47），零回归；`src/` 与 `tests/` 全量 `compileall` 通过。
+覆盖：schema 六类非法输入、四类越界裁剪、支路最小绿保底、溯源守卫（含「rationale 与自身参数自相矛盾」）、无 Key 降级、`rounds=0` 不触模型、排队劣化轮次弃用、闭环反馈回灌、裁决字段两个方向。
+
+> 14 项 Playwright E2E 本次**未重跑** —— 本次改动未触碰前端资源与 E2E 用例；
+> 且本机 E2E 进程退出受 Chromium teardown 限制（见 v2.2.2 已知限制），CI（ubuntu-latest）不受影响。
+
+**端到端实证**（本机 + 本地 mock LLM，可离线复现；`duration=300s`、事故窗口 75–210s、单种子）：
+
+- `decision_mode = llm_closed_loop`、`decision_engine = mock-model`、`rounds_executed = 2 / 2`
+- **模型请求的参数与实际下发到 SUMO 的参数逐项一致**（第 1 轮 `cycle=100s / share=0.68 / reroute=0.12 / speed=45km/h`，`clipping_adjustments` 为空）
+- **第 2 轮 prompt 中确实携带了第 1 轮的实测量化反馈** —— 原文片段：
+  `【上一轮你的决策与实测反馈】… SUMO 实测结果（相对无干预基线）：{"delay_improvement_pct": -18.2, "queue_improvement_pct": 58.3, …}`
+  → 闭环成立，是真实回路而非纸面功能
+- 本轮实测中 LLM 两轮均未被采纳（延误 13.0 / 13.2 s/veh 高于确定性基准），
+  `recommendation.verdict` 正确输出为「不建议下发」
+
+### 已知限制
+
+- **本次端到端数值不具结论性**：`duration=300s` / 事故窗口 75–210s 属**非标定短工况**，且为单种子单次运行；该工况下所有干预方案（含确定性方案）的延误都高于无干预基线。要得到可用于决策的结论，必须回到标定工况（600s 推演 / 事故窗口 150–420s）并做多种子复验。此处只作为**通路验证**证据，不作任何性能主张。
+- 需要配置可用的大模型 API Key 才能产生真实闭环决策；未配置时如实降级为确定性规则链，不迭代、不编造。
+- 每多一轮决策即多一次 SUMO 仿真（标定工况约 20s/轮），故默认 2 轮、上限 4 轮。
+
+### 后续待办
+
+- 在标定工况 + 多种子下评估闭环策略的真实增益；
+- 把闭环寻优接入前端大屏（当前仅有 API）；
+- 控制变量可扩展（相位差权重、感应控制 min/max 绿参数）。
+
+---
+
 ## [2026-09-14] v2.2.4：参赛文实对齐专项整改（P0 五条）
 
 **主题**：参赛文档与代码实测之间存在**方向性矛盾**——README §9.2 宣称「M4 相比 M0 延误 ↓18.3%、排队 ↓26.5%、通行 ↑13.8%、碳排 ↓12.1%」，而仓库内 `ablation_result_20260913_153022.md`（SUMO 实测）给出的却是「延误 ↓4.7%、排队 **↑38.9%**、通行 ↑0.0%、碳排 ↓0.8%」。两边不仅数值不同，**排队指标连正负号都是反的**，且 README 那 4 个百分比无法由任何脚本复现。同时 README 通篇以 Multi-Agent System 自称，而代码中只有一个 LLM 实例、且**不参与任何仿真输入**；路网口径上「OSM 真实路网」与「SUMO 微观仿真」混用，容易被理解为同一张网。

@@ -3,7 +3,7 @@ TrafficAgent-DSS: Dynamic Rerouting & VMS Diversion Allocator
 Calculates dynamic flow diversion ratios to prevent bottleneck queue spillback.
 """
 
-from typing import Dict, List
+from typing import Any, Dict, List
 
 
 class DynamicReroutingAllocator:
@@ -124,3 +124,59 @@ class DynamicReroutingAllocator:
             "severity_score": round(severity, 3),
             "risk_warning": "分流流量处于旁路承载能力安全区间" if final_diversion > 0 else "拥堵受控"
         }
+
+    def apply_diversion_override(
+        self,
+        plan: Dict[str, Any],
+        diversion_ratio: float,
+        upstream_flow_vph: float,
+        bottleneck_queue_meters: float,
+        bypass_spare_capacity_vph: float = 0.0,
+    ) -> Dict[str, Any]:
+        """
+        Re-derives the diversion payload after an external decision overrides the
+        ratio this allocator would have chosen on its own (see the LLM decision
+        layer, `src/agents/llm_decision.py`).
+
+        The caller clamps `diversion_ratio` into the feasible domain; this method
+        only keeps the *derived* fields and the VMS copy consistent with the ratio
+        actually deployed, so the published advisory can never describe a
+        different action than the one that reached the simulator. The diversion
+        ratio is still capped by this allocator's own ceiling and by the bypass
+        spare-capacity constraint — an override cannot talk the system into
+        overloading the alternative route.
+        """
+        upstream_flow_vph = max(0.0, float(upstream_flow_vph))
+        requested = max(0.0, float(diversion_ratio))
+
+        # Same two hard ceilings the allocator applies to its own decision: the
+        # absolute 40% policy cap and the bypass spare-capacity constraint.
+        if upstream_flow_vph <= 0.0:
+            by_capacity = self.max_diversion
+        else:
+            by_capacity = max(0.0, float(bypass_spare_capacity_vph)) / max(1.0, upstream_flow_vph)
+        applied_ratio = round(min(max(0.0, min(self.max_diversion, requested)), by_capacity), 2)
+
+        diverted_vph = round(upstream_flow_vph * applied_ratio)
+
+        if applied_ratio > 0.0:
+            vms_text = (
+                f"【交通诱导】前方主干路拥堵，排队{int(max(0.0, float(bottleneck_queue_meters)))}米，"
+                f"建议非直通车辆右转经旁路绕行。"
+            )
+            risk_text = "分流流量处于旁路承载能力安全区间"
+        else:
+            vms_text = "前方主干路通行顺畅，请按道行驶"
+            risk_text = "拥堵受控"
+
+        out = dict(plan)
+        out.update({
+            "need_diversion": applied_ratio > 0.0,
+            "diversion_ratio": applied_ratio,
+            "diverted_flow_vph": diverted_vph,
+            "vms_advisory": vms_text,
+            "risk_warning": risk_text,
+            "diversion_source": "external_policy_override",
+            "diversion_requested_ratio": round(requested, 4),
+        })
+        return out
