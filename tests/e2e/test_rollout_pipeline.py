@@ -1,5 +1,10 @@
 from playwright.sync_api import Page, expect
 
+import pytest
+
+pytestmark = pytest.mark.e2e
+
+
 
 def test_rollout_pipeline_execution_and_charts(page: Page, base_url: str):
     """Test full decision pipeline trigger, KPI updates, ECharts canvas mounting, and report generation."""

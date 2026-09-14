@@ -1,5 +1,10 @@
 from playwright.sync_api import Page, expect
 
+import pytest
+
+pytestmark = pytest.mark.e2e
+
+
 
 def test_baidu_map_section_structure(page: Page, base_url: str):
     """Verify Section 1B Baidu Map container, toolbar buttons, and status."""

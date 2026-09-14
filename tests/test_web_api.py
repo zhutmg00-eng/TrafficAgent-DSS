@@ -36,7 +36,11 @@ class TestWebAPI(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["status"], "online")
-        self.assertEqual(data["version"], "2.2.0")
+        # Compare against the app's single source of truth instead of a hard-coded literal:
+        # the previous assertion pinned "2.2.0" and started failing the moment the version
+        # constant was bumped (the constant itself had drifted from the released tag).
+        from src.web.app import APP_VERSION
+        self.assertEqual(data["version"], APP_VERSION)
         self.assertIn("Decoupled", data["architecture"])
         self.assertIn("agent_brain", data)
         self.assertEqual(data["agent_brain"]["state"], "ready")

@@ -3,7 +3,9 @@ TrafficAgent-DSS: Five-Dimensional Traffic Performance Evaluator
 Computes comprehensive traffic engineering KPIs and A/B comparative improvements.
 """
 
-from typing import Dict, List, Any
+from typing import Any, Dict, List, Optional
+import math
+
 import numpy as np
 
 
@@ -24,44 +26,63 @@ class PerformanceEvaluator:
     """
 
     @staticmethod
-    def compute_summary_kpi(raw_stats: Dict[str, Any]) -> Dict[str, float]:
+    def _samples(values: Any) -> Optional[List[float]]:
+        """
+        Extracts usable finite floats from a per-step series, or None when there is
+        nothing to average.
+
+        Returning None (rather than a manufactured sample list) is what keeps a missing
+        run from turning into a confident-looking "0.0 s delay" or "36 km/h" KPI. An
+        earlier revision substituted [0.0] / [10.0] here, so a payload with no data still
+        produced a full set of plausible numbers and a derived improvement percentage.
+        """
+        if values is None:
+            return None
+        cleaned: List[float] = []
+        for v in values:
+            if v is None:
+                continue
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(f):
+                cleaned.append(f)
+        return cleaned or None
+
+    @classmethod
+    def compute_summary_kpi(cls, raw_stats: Dict[str, Any]) -> Dict[str, Optional[float]]:
         """
         Summarizes raw simulation time-step metrics into standard KPIs.
-        Safely guards against explicit None values and empty list metrics.
+
+        Metrics whose underlying samples are absent are reported as None — the caller
+        must render them as "no data" instead of a number that was never measured.
         """
-        delays = raw_stats.get("vehicle_delays")
-        if delays is None:
-            delays = [0.0]
-        else:
-            delays = [float(d) for d in delays if d is not None]
-            if not delays:
-                delays = [0.0]
+        delays = cls._samples(raw_stats.get("vehicle_delays"))
 
-        queues = raw_stats.get("queue_lengths")
-        if queues is None:
-            queues = [0.0]
-        else:
-            queues = [float(q) for q in queues if q is not None]
-            if not queues:
-                queues = [0.0]
+        queues = cls._samples(raw_stats.get("queue_lengths"))
 
-        speeds = raw_stats.get("vehicle_speeds")
-        if speeds is None and "bottleneck_speeds_kmh" in raw_stats:
+        speeds = cls._samples(raw_stats.get("vehicle_speeds"))
+        if speeds is None:
+            # Some sandbox revisions report bottleneck speed in km/h instead of m/s.
             bn_speeds = raw_stats.get("bottleneck_speeds_kmh")
-            if bn_speeds is not None:
-                speeds = [float(s) / 3.6 for s in bn_speeds if s is not None]
-        if speeds is not None:
-            speeds = [float(s) for s in speeds if s is not None]
-        if not speeds:
-            speeds = [10.0]
+            bn_clean = cls._samples(bn_speeds)
+            if bn_clean is not None:
+                speeds = [s / 3.6 for s in bn_clean]
 
         raw_co2 = raw_stats.get("total_co2_mg")
         co2_mg = max(0.0, float(raw_co2)) if raw_co2 is not None else 0.0
 
-        raw_fuel = raw_stats.get("total_fuel_mg")
-        if raw_fuel is None:
-            raw_fuel = raw_stats.get("total_fuel_ml")
-        fuel_mg = max(0.0, float(raw_fuel)) if raw_fuel is not None else 0.0
+        # Fuel totals are carried in mg. `total_fuel_ml` used to alias the mg value under a
+        # millilitre name, so any consumer reading it as volume was off by ~1000x. Accept
+        # only unambiguous keys here and convert litres back to mg when that is all we get.
+        raw_fuel_mg = raw_stats.get("total_fuel_mg")
+        if raw_fuel_mg is not None:
+            fuel_mg = max(0.0, float(raw_fuel_mg))
+        elif raw_stats.get("total_fuel_liters") is not None:
+            fuel_mg = max(0.0, float(raw_stats["total_fuel_liters"]) * 740000.0)
+        else:
+            fuel_mg = 0.0
 
         raw_trips = raw_stats.get("completed_trips")
         completed_trips = max(0, int(raw_trips)) if raw_trips is not None else 0
@@ -69,13 +90,14 @@ class PerformanceEvaluator:
         raw_duration = raw_stats.get("simulation_duration")
         sim_duration_sec = max(1.0, float(raw_duration)) if raw_duration is not None else 600.0
 
-        avg_delay = float(np.mean(delays)) if len(delays) > 0 else 0.0
-        max_queue = float(np.max(queues)) if len(queues) > 0 else 0.0
-        avg_speed_kmh = float(np.mean(speeds)) * 3.6 if len(speeds) > 0 else 0.0
+        avg_delay = float(np.mean(delays)) if delays else None
+        max_queue = float(np.max(queues)) if queues else None
+        avg_speed_kmh = float(np.mean(speeds)) * 3.6 if speeds else None
         throughput_vph = round(completed_trips * (3600.0 / sim_duration_sec), 1)
         # Variance of the 5-second network-mean delay series (stability over time),
-        # NOT the per-vehicle travel-time variance — see the class docstring.
-        tt_variance = float(np.var(delays)) if len(delays) > 1 else 0.0
+        # NOT the per-vehicle travel-time variance — see the class docstring. Needs at
+        # least two samples to mean anything; a single sample reports None, not 0.0.
+        delay_variance = round(float(np.var(delays)), 1) if delays and len(delays) > 1 else None
         co2_kg = round(co2_mg / 1e6, 2)
         # SUMO getFuelConsumption returns mg/s; fuel mass is in mg.
         # Density for standard gasoline is ~0.74 kg/L (740,000 mg/L).
@@ -83,11 +105,11 @@ class PerformanceEvaluator:
         fuel_kg = round(fuel_mg / 1e6, 2)
 
         return {
-            "avg_delay_s": round(avg_delay, 1),
-            "max_queue_m": round(max_queue, 1),
-            "avg_speed_kmh": round(avg_speed_kmh, 1),
+            "avg_delay_s": round(avg_delay, 1) if avg_delay is not None else None,
+            "max_queue_m": round(max_queue, 1) if max_queue is not None else None,
+            "avg_speed_kmh": round(avg_speed_kmh, 1) if avg_speed_kmh is not None else None,
             "throughput_vph": throughput_vph,
-            "delay_variance": round(tt_variance, 1),
+            "delay_variance": delay_variance,
             "co2_emissions_kg": co2_kg,
             "fuel_liters": fuel_liters,
             "fuel_consumption_kg": fuel_kg,
@@ -105,40 +127,72 @@ class PerformanceEvaluator:
         }
 
     @staticmethod
-    def compare_schemes(baseline_kpi: Dict[str, float], strategy_kpi: Dict[str, float]) -> Dict[str, Any]:
+    def _pct_change(base: Optional[float], other: Optional[float], *, increase: bool = False) -> Optional[float]:
+        """
+        Percentage change of `other` relative to `base`, or None when the baseline is
+        unavailable.
+
+        Returning None instead of 0.0 is deliberate: a 0.0% is rendered as
+        "持平 (0.0%)", i.e. a claim that both schemes performed identically — when the
+        truth is that nothing was measured.
+        """
+        try:
+            b = float(base)  # type: ignore[arg-type]
+            o = float(other)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(b) or not math.isfinite(o) or b <= 0:
+            return None
+        delta = (o - b) if increase else (b - o)
+        return round((delta / b) * 100.0, 1)
+
+    @classmethod
+    def compare_schemes(cls, baseline_kpi: Dict[str, float], strategy_kpi: Dict[str, float]) -> Dict[str, Any]:
         """
         Computes improvement percentages between baseline (Do-Nothing) and strategy.
-        Positive improvement % means favorable change (delay reduced, throughput increased, etc.).
+        Positive improvement % means favorable change (delay reduced, throughput increased).
+        Any metric whose baseline is missing or non-positive reports None rather than 0.0.
         """
-        def pct_reduction(base: float, strat: float) -> float:
-            if base <= 0:
-                return 0.0
-            return round(((base - strat) / base) * 100.0, 1)
+        base = baseline_kpi or {}
+        strat = strategy_kpi or {}
 
-        def pct_increase(base: float, strat: float) -> float:
-            if base <= 0:
-                return 0.0
-            return round(((strat - base) / base) * 100.0, 1)
+        delay_improv = cls._pct_change(base.get("avg_delay_s"), strat.get("avg_delay_s"))
+        queue_improv = cls._pct_change(base.get("max_queue_m"), strat.get("max_queue_m"))
+        speed_improv = cls._pct_change(base.get("avg_speed_kmh"), strat.get("avg_speed_kmh"), increase=True)
+        throughput_improv = cls._pct_change(base.get("throughput_vph"), strat.get("throughput_vph"), increase=True)
+        variance_improv = cls._pct_change(base.get("delay_variance"), strat.get("delay_variance"))
+        co2_improv = cls._pct_change(base.get("co2_emissions_kg"), strat.get("co2_emissions_kg"))
 
-        delay_improv = pct_reduction(baseline_kpi.get("avg_delay_s") or 0.0, strategy_kpi.get("avg_delay_s") or 0.0)
-        queue_improv = pct_reduction(baseline_kpi.get("max_queue_m") or 0.0, strategy_kpi.get("max_queue_m") or 0.0)
-        speed_improv = pct_increase(baseline_kpi.get("avg_speed_kmh") or 0.0, strategy_kpi.get("avg_speed_kmh") or 0.0)
-        throughput_improv = pct_increase(baseline_kpi.get("throughput_vph") or 0.0, strategy_kpi.get("throughput_vph") or 0.0)
-        variance_improv = pct_reduction(baseline_kpi.get("delay_variance") or 0.0, strategy_kpi.get("delay_variance") or 0.0)
-        co2_improv = pct_reduction(baseline_kpi.get("co2_emissions_kg") or 0.0, strategy_kpi.get("co2_emissions_kg") or 0.0)
+        base_fuel = base.get("fuel_liters")
+        if base_fuel is None:
+            base_fuel = base.get("fuel_consumption_kg")
+        strat_fuel = strat.get("fuel_liters")
+        if strat_fuel is None:
+            strat_fuel = strat.get("fuel_consumption_kg")
+        fuel_improv = cls._pct_change(base_fuel, strat_fuel)
 
-        base_fuel = baseline_kpi.get("fuel_liters") or baseline_kpi.get("fuel_consumption_kg") or 0.0
-        strat_fuel = strategy_kpi.get("fuel_liters") or strategy_kpi.get("fuel_consumption_kg") or 0.0
-        fuel_improv = pct_reduction(base_fuel, strat_fuel)
+        def _score(improv: Optional[float], weight: float) -> Optional[float]:
+            """Radar score normalized to [40, 98], or None when the metric is unknown."""
+            if improv is None:
+                return None
+            return min(98.0, max(40.0, 50.0 + improv * weight))
 
-        # Radar score normalized to [40, 98] for visualization
         radar_scores = {
-            "通行效率 (Delay)": min(98.0, max(40.0, 50.0 + delay_improv * 1.5)),
-            "空间治堵 (Queue)": min(98.0, max(40.0, 50.0 + queue_improv * 1.5)),
-            "容量释放 (Throughput)": min(98.0, max(40.0, 50.0 + throughput_improv * 2.0)),
-            "运行平稳 (Reliability)": min(98.0, max(40.0, 50.0 + variance_improv * 1.2)),
-            "绿色低碳 (Carbon)": min(98.0, max(40.0, 50.0 + co2_improv * 2.0)),
+            "通行效率 (Delay)": _score(delay_improv, 1.5),
+            "空间治堵 (Queue)": _score(queue_improv, 1.5),
+            "容量释放 (Throughput)": _score(throughput_improv, 2.0),
+            "运行平稳 (Reliability)": _score(variance_improv, 1.2),
+            "绿色低碳 (Carbon)": _score(co2_improv, 2.0),
         }
+
+        if delay_improv is None:
+            grade: Optional[str] = None
+        elif delay_improv >= 25.0 and queue_improv is not None and queue_improv >= 25.0:
+            grade = "卓越 (Level A+)"
+        elif delay_improv >= 15.0:
+            grade = "良好 (Level A)"
+        else:
+            grade = "一般 (Level B)"
 
         return {
             "delay_improvement_pct": delay_improv,
@@ -149,8 +203,5 @@ class PerformanceEvaluator:
             "co2_improvement_pct": co2_improv,
             "fuel_improvement_pct": fuel_improv,
             "radar_scores": radar_scores,
-            "overall_effectiveness_grade": (
-                "卓越 (Level A+)" if delay_improv >= 25.0 and queue_improv >= 25.0
-                else ("良好 (Level A)" if delay_improv >= 15.0 else "一般 (Level B)")
-            )
+            "overall_effectiveness_grade": grade,
         }

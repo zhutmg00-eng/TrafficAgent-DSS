@@ -598,7 +598,10 @@ class SumoSimulationSandbox:
             "completed_trips": completed_vehicles,
             "total_co2_mg": total_co2,
             "total_fuel_mg": total_fuel,
-            "total_fuel_ml": total_fuel,  # legacy compatibility alias
+            # Volume equivalent for reporting only. `total_fuel_ml` used to alias the mg
+            # value under a millilitre name, so any consumer reading it as a volume was
+            # off by ~1000x. Gasoline density 0.74 kg/L => litres = mg / 740000.
+            "total_fuel_liters": round(total_fuel / 740000.0, 4),
             "control_evidence": {
                 "scheme": scheme,
                 "seed": safe_seed,

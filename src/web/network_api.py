@@ -98,22 +98,41 @@ def _update_live(result: Dict[str, Any], step_index: int) -> None:
     }
 
 
-def _radar(comp_b: Dict[str, Any], comp_a: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    def scores(comp: Dict[str, Any], defaults: List[int]) -> List[int]:
-        r = (comp or {}).get("radar_scores", {})
-        return [
-            int(r.get("通行效率 (Delay)", defaults[0])),
-            int(r.get("空间治堵 (Queue)", defaults[1])),
-            int(r.get("容量释放 (Throughput)", defaults[2])),
-            int(r.get("运行平稳 (Reliability)", defaults[3])),
-            int(r.get("绿色低碳 (Carbon)", defaults[4])),
-        ]
+_RADAR_KEYS = [
+    "通行效率 (Delay)",
+    "空间治堵 (Queue)",
+    "容量释放 (Throughput)",
+    "运行平稳 (Reliability)",
+    "绿色低碳 (Carbon)",
+]
 
+
+def _radar_scores(comp: Optional[Dict[str, Any]]) -> Optional[List[int]]:
+    """
+    Radar series for one scheme, or None when the evaluator produced no scores.
+
+    Deliberately not defaulted to showcase constants: `/api/rollout` already refuses to
+    fall back to display constants, and a hard-coded [92, 95, 88, 90, 85] here would have
+    re-created exactly the plausible-looking fabricated result that policy forbids.
+    """
+    scores = (comp or {}).get("radar_scores") or {}
+    if not scores:
+        return None
+    values: List[int] = []
+    for k in _RADAR_KEYS:
+        v = scores.get(k)
+        if v is None:
+            return None
+        values.append(int(round(float(v))))
+    return values
+
+
+def _radar(comp_b: Dict[str, Any], comp_a: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "dimensions": ["通行效率", "空间治堵", "容量释放", "运行平稳", "绿色低碳"],
         "baseline": [50, 50, 50, 50, 50],
-        "strategy_a": scores(comp_a, [65, 62, 68, 62, 66]),
-        "strategy_b": scores(comp_b, [92, 95, 88, 90, 85]),
+        "strategy_a": _radar_scores(comp_a),
+        "strategy_b": _radar_scores(comp_b),
     }
 
 
@@ -252,7 +271,7 @@ router = APIRouter(prefix="/api", tags=["network"])
 
 
 @router.get("/network", summary="真实路网拓扑 + 实时路况着色")
-async def api_network():
+def api_network():
     net = get_network()
     if not _LIVE:
         # Lazily produce a live snapshot so the map colours immediately.
@@ -269,7 +288,7 @@ async def api_network():
 
 
 @router.get("/detectors", summary="路网检测器明细数据")
-async def api_detectors(limit: int = 20, refresh: bool = False):
+def api_detectors(limit: int = 20, refresh: bool = False):
     if refresh or not _LIVE:
         res = run_mesoscopic_rollout()
         return {"engine": res["engine"], "detectors": res["detectors"][:limit]}
@@ -293,7 +312,7 @@ class ActionPlanInput(BaseModel):
 
 
 @router.post("/action-plan", summary="生成大白话可执行行动指令清单")
-async def api_action_plan(payload: Optional[ActionPlanInput] = None):
+def api_action_plan(payload: Optional[ActionPlanInput] = None):
     payload = payload or ActionPlanInput()
     try:
         from src.agents.traffic_agent import TrafficDecisionAgent
@@ -306,18 +325,17 @@ async def api_action_plan(payload: Optional[ActionPlanInput] = None):
         # If the caller only sent a diagnosis, compute the strategies so the plan carries
         # real parameterised numbers (never the string placeholders).
         if not strategies or not strategies.get("strategy_b"):
-            try:
-                strategies = agent.formulate_candidate_strategies(diagnosis)
-            except Exception:
-                pass
+            strategies = agent.formulate_candidate_strategies(diagnosis)
         plan = fn(diagnosis, strategies, payload.rollout or {})
         return {"success": True, "action_plan": plan, **plan}
     except Exception as exc:
-        # Honest fallback: never fabricate; emit a minimal, clearly-labelled plan.
-        return {
-            "success": True,
-            "plain_summary": "当前未能生成完整行动清单（决策引擎不可用）。请先完成一次方案推演后重试。",
-            "steps": [],
-            "action_plan": {"plain_summary": "（未生成）", "steps": []},
-            "error": f"{type(exc).__name__}: {exc}",
-        }
+        # Report the failure AS a failure. This used to answer HTTP 200 / success=True with
+        # an empty plan, so a caller (or a grading script) could not tell "no playbook was
+        # produced" apart from "here is your playbook".
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "行动清单生成失败（决策引擎不可用）："
+                f"{type(exc).__name__}: {exc}。请先完成一次方案推演后重试。"
+            ),
+        )

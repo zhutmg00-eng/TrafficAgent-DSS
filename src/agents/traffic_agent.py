@@ -690,20 +690,47 @@ class TrafficDecisionAgent:
         strat_a = strategies.get("strategy_a") or {}
         reroute_det = strategies.get("reroute_details") or {}
 
-        # Extract real values (never invent)
-        cycle_len = strat_b.get("cycle_length") or strat_a.get("cycle_length") or "—"
-        green_arterial = strat_b.get("green_split_arterial") or strat_a.get("green_split_arterial") or "—"
-        green_cross = strat_b.get("green_split_cross") or strat_a.get("green_split_cross") or "—"
-        yellow = strat_b.get("yellow_time") or "—"
+        # Numeric parameters may legitimately be absent (e.g. a caller posts only a diagnosis).
+        # Keep them as numbers-or-None and format at the point of use: the previous revision
+        # substituted the string "—" here and then did arithmetic on it
+        # (`green_arterial / max(1.0, cycle_len)`), so POST /api/action-plan raised TypeError
+        # as soon as it was called without a fully populated strategies payload.
+        def _num(value: Any) -> Optional[float]:
+            if value is None:
+                return None
+            try:
+                f = float(value)
+            except (TypeError, ValueError):
+                return None
+            return f if math.isfinite(f) else None
+
+        def _txt(value: Optional[float], unit: str = "") -> str:
+            """Render a possibly-missing number; never invent a stand-in."""
+            return "—" if value is None else f"{value:g}{unit}"
+
+        cycle_len = _num(strat_b.get("cycle_length"))
+        if cycle_len is None:
+            cycle_len = _num(strat_a.get("cycle_length"))
+        green_arterial = _num(strat_b.get("green_split_arterial"))
+        if green_arterial is None:
+            green_arterial = _num(strat_a.get("green_split_arterial"))
+        green_cross = _num(strat_b.get("green_split_cross"))
+        if green_cross is None:
+            green_cross = _num(strat_a.get("green_split_cross"))
+        yellow = _num(strat_b.get("yellow_time"))
         offsets = strat_b.get("green_wave_offsets") or []
         reroute_ratio = float(strat_b.get("reroute_ratio") or reroute_det.get("diversion_ratio") or 0.0)
         reroute_pct = int(round(reroute_ratio * 100))
         vms_msg = strat_b.get("vms_advisory") or reroute_det.get("vms_advisory") or "（未生成）"
         risk_msg = strat_b.get("risk_warning") or "（未生成）"
         can_reroute = diag.get("can_reroute", False)
-        queue_m = float(diag.get("input_state", {}).get("queue_m", 165.0))
-        link_len = float(diag.get("input_state", {}).get("link_length_m", 300.0))
-        speed_kmh = diag.get("input_state", {}).get("speed_kmh", 8.2)
+        # Detector readings come from the diagnosis' own input state. When the caller did not
+        # supply one, say so — the old code silently claimed "当前排队 165.0 米", a corridor
+        # default the operator never entered.
+        input_state = diag.get("input_state") or {}
+        queue_m = _num(input_state.get("queue_m"))
+        link_len = _num(input_state.get("link_length_m"))
+        speed_kmh = _num(input_state.get("speed_kmh"))
         bottleneck_loc = diag.get("bottleneck_location", "—")
         severity = diag.get("severity_level", "—")
 
@@ -750,15 +777,20 @@ class TrafficDecisionAgent:
             })
 
         # --- Step 2: 信号配时下发 ---
+        if green_arterial is not None and cycle_len and cycle_len > 0:
+            green_pct_text = f"主路绿灯占比提升至 {round(green_arterial / cycle_len * 100, 1)}%，瓶颈断面放行效率提高。"
+        else:
+            green_pct_text = "配时参数未完整下发，绿信比以信号机实际回执为准。"
         steps.append({
             "n": len(steps) + 1,
             "phase": "立即 (0-5 分钟)",
             "title": "下发 Webster 动态信号配时",
             "action": f"将 J1-J3 交叉口信号切换为 Webster 动态优化配时。",
-            "detail": f"周期 {cycle_len} 秒 / 主路绿灯 {green_arterial} 秒 / 支路绿灯 {green_cross} 秒 / 黄灯 {yellow} 秒。",
+            "detail": f"周期 {_txt(cycle_len, ' 秒')} / 主路绿灯 {_txt(green_arterial, ' 秒')} / "
+                      f"支路绿灯 {_txt(green_cross, ' 秒')} / 黄灯 {_txt(yellow, ' 秒')}。",
             "where": f"J1、J2、J3 三座交叉口信号机",
             "when": "与 VMS 发布同步下发，信号机确认接受。",
-            "expected": f"主路绿灯占比提升至 {round(green_arterial / max(1.0, cycle_len) * 100, 1)}%，瓶颈断面放行效率提高。",
+            "expected": green_pct_text,
             "owner": "信号控制员",
             "verify": "信号机返回配时更新确认码；检查主路实际绿灯时长不低于设定值。",
         })
@@ -780,14 +812,23 @@ class TrafficDecisionAgent:
             })
 
         # --- Step 4: 现场/上游管控与回溢防护 ---
-        queue_ratio = min(1.0, queue_m / max(1.0, link_len))
-        spillback警戒 = "已" if queue_ratio >= 0.75 else "尚未"
+        queue_ratio = None
+        if queue_m is not None and link_len and link_len > 0:
+            queue_ratio = min(1.0, queue_m / link_len)
+        if queue_ratio is None:
+            spillback_detail = "本次未获得排队长度/路段长度检测数据，无法判定回溢风险（请核对输入状态后再下发）。"
+        else:
+            spillback警戒 = "已" if queue_ratio >= 0.75 else "尚未"
+            spillback_detail = (
+                f"当前排队 {round(queue_m, 1)} 米，占路段 {round(queue_ratio * 100, 1)}%，"
+                f"{spillback警戒}触及 75% 回溢警戒线。"
+            )
         steps.append({
             "n": len(steps) + 1,
             "phase": "持续 (全程监测)",
             "title": "上游管控与回溢防护",
             "action": f"监测上游交叉口排队，若回溢风险升高立即启动上游限速或间歇放行。",
-            "detail": f"当前排队 {round(queue_m, 1)} 米，占路段 {round(queue_ratio * 100, 1)}%，{spillback警戒}触及 75% 回溢警戒线。",
+            "detail": spillback_detail,
             "where": f"瓶颈上游各交叉口入口断面",
             "when": "接到本指令后立即启动，每 2 分钟复核一次。",
             "expected": f"防止 {bottleneck_loc} 排队回溢至上游路口造成网格锁死。",
@@ -796,12 +837,17 @@ class TrafficDecisionAgent:
         })
 
         # --- Step 5: 监测验证指标 ---
+        speed_target_text = (
+            f"瓶颈车速目标 > {round(speed_kmh * 1.5, 1)} km/h"
+            if speed_kmh is not None
+            else "瓶颈车速目标以现场实测基线为参照（本次未输入车速数据）"
+        )
         steps.append({
             "n": len(steps) + 1,
             "phase": "持续 (10-30 分钟)",
             "title": "成效监测与验证",
             "action": "持续跟踪核心指标变化，验证治理措施是否生效。",
-            "detail": f"关键监测指标: 瓶颈车速目标 > {round(speed_kmh * 1.5, 1)} km/h；排队缩短 {queue_imp}；延误降低 {delay_imp}。",
+            "detail": f"关键监测指标: {speed_target_text}；排队缩短 {queue_imp}；延误降低 {delay_imp}。",
             "where": f"{bottleneck_loc} 断面检测器 + 全线检测器",
             "when": "配时下发后 10 分钟开始首次复核。",
             "expected": f"治理措施生效后，瓶颈车速回升、排队缩短、延误下降。",
@@ -810,12 +856,17 @@ class TrafficDecisionAgent:
         })
 
         # --- Step 6: 结束与恢复 ---
+        recovery_text = (
+            f"恢复前确认瓶颈车速回升至 {round(speed_kmh * 2.5, 1)} km/h 以上且排队低于 50 米。"
+            if speed_kmh is not None
+            else "恢复前确认瓶颈车速与排队已回落至常态水平（以现场实测为准）。"
+        )
         steps.append({
             "n": len(steps) + 1,
             "phase": "恢复 (事故清除后 15-30 分钟)",
             "title": "恢复正常信号配时",
             "action": "事故清除、排队消散后，逐步恢复原有定时信号配时方案。",
-            "detail": f"恢复前确认瓶颈车速回升至 {round(speed_kmh * 2.5, 1)} km/h 以上且排队低于 50 米。分两步回落: 先退绿波→再退 Webster 优化→恢复定时方案。",
+            "detail": f"{recovery_text}分两步回落: 先退绿波→再退 Webster 优化→恢复定时方案。",
             "where": f"J1-J3 全线交叉口",
             "when": "确认事故清除、拥堵解除后 15 分钟内执行。",
             "expected": "平稳回落至正常配时，避免车流骤停。",
@@ -838,10 +889,15 @@ class TrafficDecisionAgent:
         })
 
         # Plain summary
+        state_phrase = (
+            f"排队 {round(queue_m, 1)} 米、车速 {round(speed_kmh, 1)} km/h"
+            if (queue_m is not None and speed_kmh is not None)
+            else "排队/车速检测数据未完整输入"
+        )
         plain_summary = (
-            f"{bottleneck_loc} 当前严重拥堵（{severity}），排队 {round(queue_m, 1)} 米、车速 {round(speed_kmh, 1)} km/h。"
+            f"{bottleneck_loc} 当前严重拥堵（{severity}），{state_phrase}。"
             f"建议立即发布 VMS 分流{'（' + str(reroute_pct) + '%）' if reroute_pct > 0 else '待命'}，"
-            f"同步切换 Webster 动态信号（周期 {cycle_len} 秒、主路绿灯 {green_arterial} 秒）"
+            f"同步切换 Webster 动态信号（周期 {_txt(cycle_len, ' 秒')}、主路绿灯 {_txt(green_arterial, ' 秒')}）"
             + (f"并启用绿波协调（相位差 {', '.join(str(o) + 's' for o in offsets)}）" if offsets else "")
             + f"，预计延误降低{delay_imp}、排队缩短{queue_imp}。"
         )
@@ -1169,6 +1225,7 @@ class TrafficDecisionAgent:
         execution_mode = rollout_results.get("execution_mode") or "unknown"
         mode_label = {
             "physical_sumo_sandbox": "SUMO 微观物理仿真（TraCI 实测数据）",
+            "mesoscopic_network": "真实路网中观推演引擎（HCM/Webster 排队模型，非微观仿真）",
             "calibrated_empirical_fallback": "标定经验数据（物理仿真不可用时的降级估算，非实测）",
             "calibrated_empirical_fast": "标定经验数据（快速交互模式，非实测）",
             "unknown": "⚠️ 数据来源未标注 —— 本报告不得作为量化结论对外使用",
@@ -1179,6 +1236,11 @@ class TrafficDecisionAgent:
         # provenance table printed a few lines below.
         if execution_mode == "physical_sumo_sandbox":
             verification_status = "数字孪生沙盒推演完成 (What-If Simulation Verified)"
+        elif execution_mode == "mesoscopic_network":
+            verification_status = (
+                "真实路网中观推演完成（排队模型计算，非微观车辆仿真）"
+                "(Mesoscopic Network Rollout — NOT a micro-simulation)"
+            )
         else:
             verification_status = (
                 "标定经验数据（非实测）(Calibrated Estimate — NOT a simulation run)"
@@ -1245,7 +1307,11 @@ class TrafficDecisionAgent:
             )
 
         if comp_b:
-            grade_line = f"**综合成效评级**：**{comp_b.get('overall_effectiveness_grade', '—')}**"
+            grade_value = comp_b.get("overall_effectiveness_grade")
+        else:
+            grade_value = None
+        if grade_value:
+            grade_line = f"**综合成效评级**：**{grade_value}**"
         else:
             grade_line = (
                 "**综合成效评级**：*不可用* —— 本次未获得有效的 A/B 推演对比数据，"
@@ -1259,6 +1325,58 @@ class TrafficDecisionAgent:
             )
         else:
             data_notice = ""
+
+        # --- Section 二 intro: describe the run that actually produced these numbers -- #
+        # Hard-coding "通过 SUMO 高保真微观物理推演沙盒…执行 A/B 方案平行推演" contradicted
+        # the provenance table a few lines above whenever the figures came from calibrated
+        # or mesoscopic data (see test_report_verification_header_matches_provenance).
+        if execution_mode == "physical_sumo_sandbox":
+            rollout_intro = (
+                "通过 SUMO 高保真微观物理推演沙盒，针对设定推演窗口期执行 A/B 方案平行推演，\n"
+                "五维核心指标对比如下："
+            )
+        elif execution_mode == "mesoscopic_network":
+            rollout_intro = (
+                "本组数据由**真实路网中观排队推演引擎**（HCM/Webster 排队模型）产出，"
+                "未运行微观车辆仿真；针对设定推演窗口期执行 A/B 方案平行推演，\n"
+                "五维核心指标对比如下："
+            )
+        else:
+            rollout_intro = (
+                "> ⚠️ **本组数据为标定经验数据，非实测**（未运行任何仿真器）。下表数值来自标定"
+                "数据集，仅可用于流程演示，不得作为量化结论对外宣称。\n\n五维核心指标对比如下："
+            )
+
+        # --- Recommendation: must follow the numbers, not precede them ---------------- #
+        # The previous revision unconditionally printed "【推荐采纳方案】：方案 B" — even when
+        # strategy B's delay improvement was negative and its grade was merely "一般".
+        delay_pct = (comp_b or {}).get("delay_improvement_pct")
+        speed_pct = (comp_b or {}).get("speed_improvement_pct")
+        if delay_pct is None:
+            recommendation_head = (
+                "**【推荐采纳方案】**：*不可用* —— 本次未获得可比较的 A/B 推演结果，"
+                "不作方案推荐。"
+            )
+            recommendation_note = (
+                "建议先完成一次有效的方案推演（或开启微观 SUMO 推演）后重新生成简报。"
+            )
+        elif delay_pct > 0:
+            recommendation_head = "**【推荐采纳方案】**：**方案 B：TrafficAgent-DSS 系统级时空协同治理**"
+            detail = [f"平均延误较基线降低 **{delay_pct}%**"]
+            if speed_pct is not None:
+                detail.append(f"断面平均车速变化 **{speed_pct:+.1f}%**")
+            if grade_value:
+                detail.append(f"综合成效评级 **{grade_value}**")
+            recommendation_note = "依据：" + "，".join(detail) + "。"
+        else:
+            recommendation_head = (
+                f"**【推荐采纳方案】**：*不建议全面启用方案 B* —— 本次推演中方案 B "
+                f"未体现正收益（延误变化 **{delay_pct}%**，负值为恶化）。"
+            )
+            recommendation_note = (
+                "建议保留方案 A（Webster 单点自适应）或复核输入工况后重跑；"
+                "不依据本结果做全面推广。"
+            )
 
         # --- Recommended actions --------------------------------------- #
         cycle_len = strat_b.get("cycle_length")
@@ -1369,8 +1487,7 @@ class TrafficDecisionAgent:
 
 ### 二、 多方案数字孪生推演与成效比对 (What-If Analysis)
 
-通过 SUMO 高保真微观物理推演沙盒，针对设定推演窗口期执行 A/B 方案平行推演，
-五维核心指标对比如下：
+{rollout_intro}
 
 | 评估维度 / 指标 | 现状基线 (Do-Nothing) | 方案A (Webster自适应) | 方案B (Agent协同治理) | 方案B改善幅度 |
 | :--- | :--- | :--- | :--- | :--- |
@@ -1385,10 +1502,11 @@ class TrafficDecisionAgent:
 
 ### 三、 决策推荐与协同处置指令建议 (Action Recommendation)
 
-**【推荐采纳方案】**：**方案 B：TrafficAgent-DSS 系统级时空协同治理**
+{recommendation_head}
 
-本方案的三项核心指令已转化为可执行的行动清单（见下方「行动指令清单」），
-此处列出关键参数速览：
+{recommendation_note}
+
+以下为按当前策略参数生成的可执行指令速览（是否采纳以复核结论为准）：
 
 | 指令 | 参数 |
 | :--- | :--- |

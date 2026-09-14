@@ -4,10 +4,13 @@ Built with FastAPI, providing RESTful endpoints for real-time situational awaren
 LLM Chain-of-Thought (CoT) reasoning, What-If simulation rollouts, and report export.
 """
 
+import mimetypes
 import os
 import sys
 import json
 import shutil
+import threading
+import time
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
@@ -29,11 +32,37 @@ from src.tools.evaluator import PerformanceEvaluator
 from src.agents.traffic_agent import TrafficDecisionAgent
 from src.agents.llm_client import LLMReasoningClient
 
+# ---------------------------------------------------------------------------
+# Static-resource MIME hardening.
+#
+# Python's `mimetypes` reads the Windows registry on this platform, and a third-party
+# installer can rewrite HKCR\.css to an unofficial `application/x-css`. Starlette's
+# StaticFiles then serves style.css with that Content-Type, Chrome enforces strict MIME
+# checking on stylesheets and refuses to apply it, and the whole dashboard renders
+# unstyled (measured: 0 CSS rules parsed, 257 when served as text/css).
+#
+# The mapping must never depend on the host OS, so register the core web types
+# explicitly at import time. This is a no-op on Linux/macOS and a fix on polluted
+# Windows machines (e.g. a competition demo laptop).
+for _ext, _type in (
+    (".css", "text/css"),
+    (".js", "text/javascript"),
+    (".mjs", "text/javascript"),
+    (".json", "application/json"),
+    (".svg", "image/svg+xml"),
+    (".woff", "font/woff"),
+    (".woff2", "font/woff2"),
+):
+    mimetypes.add_type(_type, _ext)
+
+APP_VERSION = "2.2.1"
+DEFAULT_DASHBOARD_PORT = 8501
+
 # Application initialization
 app = FastAPI(
     title="TrafficAgent-DSS 城市交通拥堵治理决策支持系统 API",
     description="2026年第十六届北京市大学生交通科技大赛 · ITSAC 2026 创新挑战赛（赛题2）现代化解耦架构决策服务",
-    version="2.2.0",
+    version=APP_VERSION,
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -334,9 +363,12 @@ def get_calibrated_rollout_data(
 
 # REST API Endpoints
 @app.get("/api/status", summary="系统健康与状态检查")
-async def get_system_status():
+def get_system_status():
     """
     Returns system health, agent status, and active scenario configurations.
+
+    Declared as a sync handler so FastAPI runs it in its threadpool: this endpoint
+    must stay responsive while a long SUMO rollout occupies a worker thread.
     """
     has_sumo = False
     try:
@@ -350,7 +382,7 @@ async def get_system_status():
     return {
         "status": "online",
         "system_name": "TrafficAgent-DSS 城市交通拥堵治理决策支持系统",
-        "version": "2.2.0",
+        "version": APP_VERSION,
         "architecture": "Decoupled Modern RESTful API + Responsive Dashboard",
         "agent_brain": {
             "state": "ready",
@@ -386,7 +418,7 @@ async def get_system_status():
 
 
 @app.post("/api/llm/detect-models", summary="自动识别与探测可用大模型列表 (ccSwitch 风格)")
-async def detect_llm_models(payload: Optional[LLMDetectModelsInput] = None):
+def detect_llm_models(payload: Optional[LLMDetectModelsInput] = None):
     """
     Queries /v1/models endpoint from the provided or current base_url and api_key,
     auto-detecting all available model IDs.
@@ -419,7 +451,7 @@ async def get_llm_config():
 
 
 @app.post("/api/llm/config", summary="热更新并切换大模型配置")
-async def update_llm_config(payload: LLMConfigInput):
+def update_llm_config(payload: LLMConfigInput):
     """
     Hot-updates API key, base URL, and active model for the running agent.
     """
@@ -445,6 +477,35 @@ BAIDU_MAP_CENTER_LAT = float(os.environ.get("BAIDU_MAP_CENTER_LAT", "39.965") or
 _BAIDU_DIRECTION_URL = "https://api.map.baidu.com/direction/v2/driving"
 _BAIDU_ROUTE_CACHE: Dict[str, Dict[str, Any]] = {}
 _BAIDU_ROUTE_CACHE_TTL_S = 120.0
+_BAIDU_ROUTE_CACHE_MAX = 256
+# Guards _BAIDU_ROUTE_CACHE: this handler is async (it awaits httpx), so concurrent
+# requests can interleave between the lookup and the store.
+_BAIDU_ROUTE_CACHE_LOCK = threading.Lock()
+
+
+def _baidu_cache_get(key: str) -> Optional[Dict[str, Any]]:
+    """Return a non-expired cache entry, sweeping expired ones when the map grows."""
+    now = time.time()
+    with _BAIDU_ROUTE_CACHE_LOCK:
+        entry = _BAIDU_ROUTE_CACHE.get(key)
+        if entry is not None and now - entry.get("_ts", 0.0) >= _BAIDU_ROUTE_CACHE_TTL_S:
+            entry = None
+        if len(_BAIDU_ROUTE_CACHE) > _BAIDU_ROUTE_CACHE_MAX:
+            # Bounded growth: drop everything past its TTL, then the oldest half if needed.
+            for k in [k for k, v in _BAIDU_ROUTE_CACHE.items()
+                      if now - v.get("_ts", 0.0) >= _BAIDU_ROUTE_CACHE_TTL_S]:
+                _BAIDU_ROUTE_CACHE.pop(k, None)
+            if len(_BAIDU_ROUTE_CACHE) > _BAIDU_ROUTE_CACHE_MAX:
+                for k, _ in sorted(_BAIDU_ROUTE_CACHE.items(), key=lambda kv: kv[1].get("_ts", 0.0))[
+                    : len(_BAIDU_ROUTE_CACHE) - _BAIDU_ROUTE_CACHE_MAX
+                ]:
+                    _BAIDU_ROUTE_CACHE.pop(k, None)
+    return entry
+
+
+def _baidu_cache_put(key: str, value: Dict[str, Any]) -> None:
+    with _BAIDU_ROUTE_CACHE_LOCK:
+        _BAIDU_ROUTE_CACHE[key] = value
 
 
 class BaiduRouteInput(BaseModel):
@@ -457,7 +518,7 @@ class BaiduRouteInput(BaseModel):
 
 
 @app.get("/api/baidu/config", summary="百度地图前端接入配置 (AK 与地图中心)")
-async def get_baidu_config():
+def get_baidu_config():
     """
     Returns the browser-side Baidu Map AK and default map center.
     An absent AK is reported honestly so the dashboard can show a real
@@ -471,7 +532,8 @@ async def get_baidu_config():
         "gl_api": "https://api.map.baidu.com/api?v=1.0&type=webgl&ak=",
         "note": (
             "浏览器端 AK 属公开凭据，请务必在百度地图开放平台控制台为该 AK 配置 "
-            "Referer 白名单（如 http://127.0.0.1:8000/*），防止盗用。"
+            f"Referer 白名单（默认服务端口为 http://127.0.0.1:{DEFAULT_DASHBOARD_PORT}/*，"
+            "如用 PORT 环境变量改过端口请以实际地址为准），防止盗用。"
         ) if BAIDU_MAP_AK else "未配置 BAIDU_MAP_AK：真实路网视图与路径规划不可用，界面将显式标注未配置状态。",
     }
 
@@ -492,13 +554,12 @@ async def baidu_driving_route(payload: BaiduRouteInput):
         )
 
     cache_key = f"{payload.origin_lng:.5f},{payload.origin_lat:.5f}->{payload.dest_lng:.5f},{payload.dest_lat:.5f}"
-    import time as _time
 
-    cached = _BAIDU_ROUTE_CACHE.get(cache_key)
-    now = _time.time()
-    if cached and now - cached.get("_ts", 0) < _BAIDU_ROUTE_CACHE_TTL_S:
+    cached = _baidu_cache_get(cache_key)
+    if cached:
         return {**cached, "cached": True}
 
+    now = time.time()
     import httpx
 
     params = {
@@ -544,7 +605,7 @@ async def baidu_driving_route(payload: BaiduRouteInput):
         "cached": False,
         "note": "数据来源：百度地图驾车路径规划 API 实时返回，未经任何人工修饰。",
     }
-    _BAIDU_ROUTE_CACHE[cache_key] = {**payload_out, "_ts": now}
+    _baidu_cache_put(cache_key, {**payload_out, "_ts": now})
     return payload_out
 
 
@@ -595,18 +656,11 @@ def _baidu_congestion_summary(route: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @app.post("/api/diagnose", summary="智能体思维链态势诊断与拥堵归因")
-async def diagnose_traffic(state: Optional[TrafficStateInput] = None):
+def diagnose_traffic(state: Optional[TrafficStateInput] = None):
     """
     Executes situational perception, bottleneck attribution, and Chain-of-Thought (CoT) reasoning.
     """
-    input_dict = state.model_dump() if state else {
-        "bottleneck_edge": "J1_J2 (主干线合流段)",
-        "queue_m": 165.0,
-        "link_length_m": 300.0,
-        "speed_kmh": 8.2,
-        "occupancy": 0.82,
-        "bypass_occupancy": 0.28
-    }
+    input_dict = state.model_dump() if state else TrafficStateInput().model_dump()
 
     try:
         diagnosis = agent.diagnose_bottleneck(input_dict)
@@ -638,15 +692,7 @@ async def generate_strategies(payload: Optional[StrategyFormulationInput] = None
         )
     try:
         if not diag:
-            default_state = {
-                "bottleneck_edge": "J1_J2 (主干线合流段)",
-                "queue_m": 165.0,
-                "link_length_m": 300.0,
-                "speed_kmh": 8.2,
-                "occupancy": 0.82,
-                "bypass_occupancy": 0.28
-            }
-            diag = agent.diagnose_bottleneck(default_state)
+            diag = agent.diagnose_bottleneck(TrafficStateInput().model_dump())
 
         strategies = agent.formulate_candidate_strategies(diag)
         return {
@@ -667,146 +713,136 @@ async def generate_strategies(payload: Optional[StrategyFormulationInput] = None
         )
 
 
-@app.post("/api/rollout", summary="数字孪生沙盒推演与 What-If 多方案量化评估")
-async def execute_rollout(config: Optional[RolloutConfigInput] = None):
+def _build_physical_rollout_payload(cfg: "RolloutConfigInput", rollout_raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Shapes a successful SUMO run into the public rollout response."""
+    # Format time-series for frontend charts
+    time_steps = rollout_raw.get("time_stamps", list(range(0, cfg.duration + 1, 10)))
+    traces = rollout_raw.get("raw_traces", {})
+    q_base = traces.get("baseline", {}).get("queues", [])
+    q_a = traces.get("strategy_a", {}).get("queues", [])
+    q_b = traces.get("strategy_b", {}).get("queues", [])
+
+    # Radar dimension scores are taken verbatim from the evaluator's comparison.
+    # They must NOT be defaulted to showcase constants: if a scheme produced no
+    # scores, the dashboard has to show a missing state rather than plausible-looking
+    # numbers that were never computed.
+    RADAR_KEYS = [
+        "通行效率 (Delay)",
+        "空间治堵 (Queue)",
+        "容量释放 (Throughput)",
+        "运行平稳 (Reliability)",
+        "绿色低碳 (Carbon)",
+    ]
+
+    def _radar_from(comp: Optional[dict]):
+        scores = (comp or {}).get("radar_scores") or {}
+        if not scores:
+            return None
+        values = []
+        for k in RADAR_KEYS:
+            v = scores.get(k)
+            if v is None:
+                return None
+            values.append(int(round(float(v))))
+        return values
+
+    comp_b = rollout_raw["comparisons"]["strategy_b"]
+    comp_a = rollout_raw["comparisons"].get("strategy_a", {})
+    radar_a = _radar_from(comp_a)
+    radar_b = _radar_from(comp_b)
+
+    radar_data = {
+        "dimensions": ["通行效率", "空间治堵", "容量释放", "运行平稳", "绿色低碳"],
+        "baseline": [50, 50, 50, 50, 50],
+        "strategy_a": radar_a,
+        "strategy_b": radar_b
+    }
+
+    return {
+        "success": True,
+        "execution_mode": "physical_sumo_sandbox",
+        "simulation_duration": cfg.duration,
+        "seed": cfg.seed,
+        "incident_window": [cfg.incident_start, cfg.incident_end],
+        # Echo the requested scenario labels together with the corridor that was
+        # actually simulated. `corridor_choice` / `congestion_type` are descriptive
+        # labels: the physical sandbox always runs the bundled corridor and incident
+        # profile, so surfacing both makes that explicit instead of leaving the
+        # caller to assume the labels selected something.
+        "scenario": {
+            "requested_corridor_choice": cfg.corridor_choice,
+            "requested_congestion_type": cfg.congestion_type,
+            "simulated_corridor": "scenarios/corridor.net.xml (J1-J3 bundled corridor)",
+            "note": "物理沙盒固定运行内置走廊与事故工况；上述标签仅为展示用途，不改变路网。",
+        },
+        "kpis": rollout_raw["kpis"],
+        "comparisons": rollout_raw["comparisons"],
+        # Audit trail: which controls actually reached the simulator, and which
+        # detector inputs drove the plan. Promised by CHANGELOG ("说做了 vs 真做了
+        # 可对照") but previously dropped here, so no API client could verify it.
+        "control_evidence": rollout_raw.get("control_evidence", {}),
+        "strategy_inputs": rollout_raw.get("strategy_inputs", {}),
+        "time_series": {
+            "time_steps": time_steps,
+            "queue_baseline": q_base,
+            "queue_strategy_a": q_a,
+            "queue_strategy_b": q_b
+        },
+        "radar": radar_data
+    }
+
+
+def _degrade_rollout(cfg: "RolloutConfigInput", physical_error: BaseException) -> Dict[str, Any]:
     """
-    Executes What-If simulation rollout across Baseline, Strategy A, and Strategy B.
-    Runs headless SUMO TraCI micro-physics or high-fidelity calibrated benchmark data.
+    Called only when the physical SUMO run itself failed. Tries the real-network
+    mesoscopic engine first, then the calibrated dataset, and always records *why*
+    plus which engine actually produced the numbers.
     """
-    cfg = config or RolloutConfigInput()
+    try:
+        result = network_api.run_mesoscopic_rollout(
+            duration=cfg.duration,
+            incident_start=cfg.incident_start,
+            incident_end=cfg.incident_end,
+            use_rerouting=cfg.use_rerouting,
+            use_green_wave=cfg.use_green_wave,
+            use_webster=cfg.use_webster,
+            seed=cfg.seed,
+        )
+        result["fallback_reason"] = f"SUMO 不可用，已平滑降级至真实路网中观排队推演引擎: {physical_error}"
+        result["degraded"] = True
+        return result
+    except Exception as meso_error:
+        calibrated = get_calibrated_rollout_data(
+            duration=cfg.duration,
+            incident_start=cfg.incident_start,
+            incident_end=cfg.incident_end,
+            use_rerouting=cfg.use_rerouting,
+            use_green_wave=cfg.use_green_wave,
+            use_webster=cfg.use_webster,
+            seed=cfg.seed
+        )
+        calibrated["execution_mode"] = "calibrated_empirical_fallback"
+        calibrated["fallback_reason"] = (
+            f"SUMO 与中观引擎均不可用，回退至标定数据: {physical_error} / {meso_error}"
+        )
+        calibrated["degraded"] = True
+        calibrated["success"] = True
+        return calibrated
 
-    if cfg.run_physical_sandbox:
-        try:
-            # Close the diagnosis -> strategy -> control loop: the detector state drives the
-            # Webster / green-wave / rerouting parameters that the sandbox then applies.
-            default_state = {
-                "bottleneck_edge": "J1_J2 (主干线合流段)",
-                "queue_m": 165.0,
-                "link_length_m": 300.0,
-                "speed_kmh": 8.2,
-                "occupancy": 0.82,
-                "bypass_occupancy": 0.28
-            }
-            diag = agent.diagnose_bottleneck(default_state)
 
-            rollout_raw = agent.execute_what_if_rollout(
-                duration=cfg.duration,
-                incident_start=cfg.incident_start,
-                incident_end=cfg.incident_end,
-                use_rerouting=cfg.use_rerouting,
-                use_green_wave=cfg.use_green_wave,
-                use_webster=cfg.use_webster,
-                seed=cfg.seed,
-                diagnosis=diag
-            )
-            # Format time-series for frontend charts
-            time_steps = rollout_raw.get("time_stamps", list(range(0, cfg.duration + 1, 10)))
-            traces = rollout_raw.get("raw_traces", {})
-            q_base = traces.get("baseline", {}).get("queues", [])
-            q_a = traces.get("strategy_a", {}).get("queues", [])
-            q_b = traces.get("strategy_b", {}).get("queues", [])
+def _run_rollout(cfg: "RolloutConfigInput", state_dict: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Runs the What-If rollout for one traffic state.
 
-            # Radar dimension scores are taken verbatim from the evaluator's comparison.
-            # They must NOT be defaulted to showcase constants: if a scheme produced no
-            # scores, the dashboard has to show a missing state rather than plausible-looking
-            # numbers that were never computed.
-            RADAR_KEYS = [
-                "通行效率 (Delay)",
-                "空间治堵 (Queue)",
-                "容量释放 (Throughput)",
-                "运行平稳 (Reliability)",
-                "绿色低碳 (Carbon)",
-            ]
+    `state_dict` is the detector reading that drives the Webster / green-wave / rerouting
+    parameters. It is threaded in explicitly so the one-stop /api/decide pipeline can run
+    the simulation against the *same* state it diagnosed, instead of silently reverting
+    to the hard-coded corridor defaults (which made the brief internally inconsistent).
+    """
+    state = state_dict or TrafficStateInput().model_dump()
 
-            def _radar_from(comp: Optional[dict]):
-                scores = (comp or {}).get("radar_scores") or {}
-                if not scores:
-                    return None
-                values = []
-                for k in RADAR_KEYS:
-                    v = scores.get(k)
-                    if v is None:
-                        return None
-                    values.append(int(round(float(v))))
-                return values
-
-            comp_b = rollout_raw["comparisons"]["strategy_b"]
-            comp_a = rollout_raw["comparisons"].get("strategy_a", {})
-            radar_a = _radar_from(comp_a)
-            radar_b = _radar_from(comp_b)
-
-            radar_data = {
-                "dimensions": ["通行效率", "空间治堵", "容量释放", "运行平稳", "绿色低碳"],
-                "baseline": [50, 50, 50, 50, 50],
-                "strategy_a": radar_a,
-                "strategy_b": radar_b
-            }
-
-            return {
-                "success": True,
-                "execution_mode": "physical_sumo_sandbox",
-                "simulation_duration": cfg.duration,
-                "seed": cfg.seed,
-                "incident_window": [cfg.incident_start, cfg.incident_end],
-                # Echo the requested scenario labels together with the corridor that was
-                # actually simulated. `corridor_choice` / `congestion_type` are descriptive
-                # labels: the physical sandbox always runs the bundled corridor and incident
-                # profile, so surfacing both makes that explicit instead of leaving the
-                # caller to assume the labels selected something.
-                "scenario": {
-                    "requested_corridor_choice": cfg.corridor_choice,
-                    "requested_congestion_type": cfg.congestion_type,
-                    "simulated_corridor": "scenarios/corridor.net.xml (J1-J3 bundled corridor)",
-                    "note": "物理沙盒固定运行内置走廊与事故工况；上述标签仅为展示用途，不改变路网。",
-                },
-                "kpis": rollout_raw["kpis"],
-                "comparisons": rollout_raw["comparisons"],
-                # Audit trail: which controls actually reached the simulator, and which
-                # detector inputs drove the plan. Promised by CHANGELOG ("说做了 vs 真做了
-                # 可对照") but previously dropped here, so no API client could verify it.
-                "control_evidence": rollout_raw.get("control_evidence", {}),
-                "strategy_inputs": rollout_raw.get("strategy_inputs", {}),
-                "time_series": {
-                    "time_steps": time_steps,
-                    "queue_baseline": q_base,
-                    "queue_strategy_a": q_a,
-                    "queue_strategy_b": q_b
-                },
-                "radar": radar_data
-            }
-        except Exception as e:
-            # SUMO unavailable -> run the real-network mesoscopic engine (rich per-link data).
-            # Only if that also fails do we fall back to the hard-coded calibrated constants.
-            try:
-                result = network_api.run_mesoscopic_rollout(
-                    duration=cfg.duration,
-                    incident_start=cfg.incident_start,
-                    incident_end=cfg.incident_end,
-                    use_rerouting=cfg.use_rerouting,
-                    use_green_wave=cfg.use_green_wave,
-                    use_webster=cfg.use_webster,
-                    seed=cfg.seed,
-                )
-                result["fallback_reason"] = f"SUMO 不可用，已平滑降级至真实路网中观排队推演引擎: {e}"
-                result["degraded"] = True
-                return result
-            except Exception as e2:
-                calibrated = get_calibrated_rollout_data(
-                    duration=cfg.duration,
-                    incident_start=cfg.incident_start,
-                    incident_end=cfg.incident_end,
-                    use_rerouting=cfg.use_rerouting,
-                    use_green_wave=cfg.use_green_wave,
-                    use_webster=cfg.use_webster,
-                    seed=cfg.seed
-                )
-                calibrated["execution_mode"] = "calibrated_empirical_fallback"
-                calibrated["fallback_reason"] = f"SUMO 与中观引擎均不可用，回退至标定数据: {e} / {e2}"
-                calibrated["degraded"] = True
-                calibrated["success"] = True
-                return calibrated
-    else:
-        # User explicitly requested non-physical fast simulation
+    if not cfg.run_physical_sandbox:
+        # Caller explicitly requested the non-physical fast path.
         try:
             result = network_api.run_mesoscopic_rollout(
                 duration=cfg.duration,
@@ -836,9 +872,49 @@ async def execute_rollout(config: Optional[RolloutConfigInput] = None):
             calibrated["success"] = True
             return calibrated
 
+    # Close the diagnosis -> strategy -> control loop: the detector state drives the
+    # Webster / green-wave / rerouting parameters that the sandbox then applies.
+    diag = agent.diagnose_bottleneck(state)
+
+    try:
+        rollout_raw = agent.execute_what_if_rollout(
+            duration=cfg.duration,
+            incident_start=cfg.incident_start,
+            incident_end=cfg.incident_end,
+            use_rerouting=cfg.use_rerouting,
+            use_green_wave=cfg.use_green_wave,
+            use_webster=cfg.use_webster,
+            seed=cfg.seed,
+            diagnosis=diag
+        )
+    except Exception as physical_error:
+        # Only the simulator invocation justifies degrading. See the comment on the
+        # shaping step below for why post-processing errors must NOT land here.
+        return _degrade_rollout(cfg, physical_error)
+
+    # The physical run succeeded. Any failure past this point would be a bug in our own
+    # response shaping — previously it was caught by the same broad `except` and reported
+    # as "SUMO 不可用", which pointed investigations at the simulator while the real
+    # error was a formatting defect. Let it surface as a 500 instead.
+    return _build_physical_rollout_payload(cfg, rollout_raw)
+
+
+@app.post("/api/rollout", summary="数字孪生沙盒推演与 What-If 多方案量化评估")
+def execute_rollout(config: Optional[RolloutConfigInput] = None):
+    """
+    Executes What-If simulation rollout across Baseline, Strategy A, and Strategy B.
+    Runs headless SUMO TraCI micro-physics or high-fidelity calibrated benchmark data.
+
+    Declared sync so FastAPI dispatches it to a worker thread: three SUMO runs can take
+    tens of seconds, and running them on the event loop used to freeze /api/status and
+    the map polling for the whole duration.
+    """
+    cfg = config or RolloutConfigInput()
+    return _run_rollout(cfg, None)
+
 
 @app.post("/api/evaluate/multi-seed", summary="多随机种子蒙特卡洛/批次推演评估")
-async def evaluate_multi_seed(payload: Optional[MultiSeedEvaluationInput] = None):
+def evaluate_multi_seed(payload: Optional[MultiSeedEvaluationInput] = None):
     """
     Executes multi-seed evaluation to quantify statistical significance and confidence intervals.
     Supports physical SUMO sandbox runs or empirical calibrated evaluations.
@@ -859,15 +935,7 @@ async def evaluate_multi_seed(payload: Optional[MultiSeedEvaluationInput] = None
         )
 
     try:
-        default_state = {
-            "bottleneck_edge": "J1_J2 (主干线合流段)",
-            "queue_m": 165.0,
-            "link_length_m": 300.0,
-            "speed_kmh": 8.2,
-            "occupancy": 0.82,
-            "bypass_occupancy": 0.28
-        }
-        diag = agent.diagnose_bottleneck(default_state)
+        diag = agent.diagnose_bottleneck(TrafficStateInput().model_dump())
 
         fallback_notice = None
         if inp.run_physical_sandbox:
@@ -904,7 +972,8 @@ async def evaluate_multi_seed(payload: Optional[MultiSeedEvaluationInput] = None
         ]
         summary = {
             sc: {
-                m: {"mean": round(float(base_kpis[sc][m]), 2)}
+                m: ({"mean": round(float(base_kpis[sc][m]), 2)}
+                    if base_kpis[sc].get(m) is not None else None)
                 for m in metric_keys if m in base_kpis[sc]
             }
             for sc in schemes
@@ -916,7 +985,12 @@ async def evaluate_multi_seed(payload: Optional[MultiSeedEvaluationInput] = None
             "variance_improvement_pct", "co2_improvement_pct", "fuel_improvement_pct"
         ]
         comp_b = PerformanceEvaluator.compare_schemes(base_kpis["baseline"], base_kpis["strategy_b"])
-        b_improvements = {ck: {"mean": round(float(comp_b[ck]), 2)} for ck in comp_keys}
+        # A metric whose baseline is unavailable comes back as None; surface that as null
+        # instead of crashing on float(None) (the calibrated dataset carries no fuel figure).
+        b_improvements = {
+            ck: ({"mean": round(float(comp_b[ck]), 2)} if comp_b.get(ck) is not None else None)
+            for ck in comp_keys
+        }
 
         response_payload = {
             "success": True,
@@ -984,20 +1058,12 @@ async def export_decision_report(data: Optional[ReportExportInput] = None):
 
 
 @app.get("/api/report/download", summary="下载 Markdown 格式决策简报 (GET)")
-async def download_decision_report():
+def download_decision_report():
     """
     Directly returns Markdown decision briefing file as a download stream.
     """
     try:
-        default_state = {
-            "bottleneck_edge": "J1_J2 (主干线合流段)",
-            "queue_m": 165.0,
-            "link_length_m": 300.0,
-            "speed_kmh": 8.2,
-            "occupancy": 0.82,
-            "bypass_occupancy": 0.28
-        }
-        diag = agent.diagnose_bottleneck(default_state)
+        diag = agent.diagnose_bottleneck(TrafficStateInput().model_dump())
         strat = agent.formulate_candidate_strategies(diag)
         rollout = get_calibrated_rollout_data()
         report_md = agent.generate_decision_report(diag, strat, rollout)
@@ -1017,20 +1083,14 @@ async def download_decision_report():
 
 
 @app.post("/api/report/download", summary="自定义下载 Markdown 格式决策简报 (POST)")
-async def download_custom_decision_report(data: Optional[ReportExportInput] = None):
+def download_custom_decision_report(data: Optional[ReportExportInput] = None):
     """
     Returns customized Markdown decision briefing file stream based on current session state.
     """
     try:
-        default_state = {
-            "bottleneck_edge": "J1_J2 (主干线合流段)",
-            "queue_m": 165.0,
-            "link_length_m": 300.0,
-            "speed_kmh": 8.2,
-            "occupancy": 0.82,
-            "bypass_occupancy": 0.28
-        }
-        diag = data.diagnosis if data and data.diagnosis else agent.diagnose_bottleneck(default_state)
+        diag = data.diagnosis if data and data.diagnosis else agent.diagnose_bottleneck(
+            TrafficStateInput().model_dump()
+        )
         strat = data.strategies if data and data.strategies else agent.formulate_candidate_strategies(diag)
         rollout = data.rollout_data if data and data.rollout_data else get_calibrated_rollout_data()
         report_md = agent.generate_decision_report(diag, strat, rollout)
@@ -1057,7 +1117,7 @@ async def download_custom_decision_report(data: Optional[ReportExportInput] = No
 
 
 @app.post("/api/decide", summary="一站式端到端协同决策流水线")
-async def execute_full_decision_pipeline(payload: Optional[DecisionPipelineInput] = None):
+def execute_full_decision_pipeline(payload: Optional[DecisionPipelineInput] = None):
     """
     One-stop pipeline: diagnosis -> strategies -> rollout -> decision brief.
     Provides complete DSS result in a single request with graceful degradation.
@@ -1069,7 +1129,11 @@ async def execute_full_decision_pipeline(payload: Optional[DecisionPipelineInput
         strategies = agent.formulate_candidate_strategies(diagnosis)
 
         r_cfg = payload.rollout_config if payload and payload.rollout_config else RolloutConfigInput()
-        rollout_res = await execute_rollout(r_cfg)
+        # Pass the SAME detector state into the rollout. Previously the simulation was
+        # driven by the hard-coded 165 m / 0.82 corridor defaults regardless of what the
+        # caller sent, so the action plan (from the caller's state) and the simulated KPIs
+        # (from the defaults) described two different situations inside one report.
+        rollout_res = _run_rollout(r_cfg, state_dict)
 
         report_md = agent.generate_decision_report(diagnosis, strategies, rollout_res)
 
@@ -1097,18 +1161,11 @@ async def execute_full_decision_pipeline(payload: Optional[DecisionPipelineInput
 
 
 @app.get("/api/baseline-data", summary="获取标定基准推演与全套指标数据集")
-async def get_baseline_dataset():
+def get_baseline_dataset():
     """
     Returns full pre-calibrated baseline datasets for instant page initialization.
     """
-    default_state = {
-        "bottleneck_edge": "J1_J2 (主干线合流段)",
-        "queue_m": 165.0,
-        "link_length_m": 300.0,
-        "speed_kmh": 8.2,
-        "occupancy": 0.82,
-        "bypass_occupancy": 0.28
-    }
+    default_state = TrafficStateInput().model_dump()
     diagnosis = agent.diagnose_bottleneck(default_state)
     strategies = agent.formulate_candidate_strategies(diagnosis)
     rollout = get_calibrated_rollout_data()
@@ -1125,6 +1182,19 @@ async def get_baseline_dataset():
 # Static and Single-Page Application (SPA) Serving
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+FAVICON_PATH = STATIC_DIR / "favicon.svg"
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def serve_favicon():
+    """
+    Browsers request /favicon.ico unconditionally; it used to 404 on every page load.
+    Served with an explicit image/svg+xml type (browsers accept SVG here).
+    """
+    if FAVICON_PATH.exists():
+        return FileResponse(str(FAVICON_PATH), media_type="image/svg+xml")
+    return Response(status_code=204)
 
 
 @app.head("/", include_in_schema=False)

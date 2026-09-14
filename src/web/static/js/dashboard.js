@@ -109,6 +109,11 @@ const SCENARIOS = {
   }
 };
 
+// Corridor design parameter used for the bypass-capacity label. It is a property of the
+// modelled corridor (spare capacity of the parallel bypass), NOT a live detector reading —
+// named explicitly so it cannot be mistaken for measured data.
+const CORRIDOR_BYPASS_SPARE_CAPACITY_VPH = 1200;
+
 // Application Global State
 const state = {
   theme: localStorage.getItem('traffic_dss_theme') || 'dark',
@@ -121,6 +126,9 @@ const state = {
   useGreenWave: true,
   useWebster: true,
   runPhysicalSandbox: false,
+  // Selected SCENARIOS preset (supplies the KPI delta captions). Null until a scenario is
+  // chosen; renderSituationalAwareness falls back to the default preset.
+  scenarioConfig: null,
   
   trafficState: {
     bottleneck_edge: "J1_J2 (主干线合流段)",
@@ -200,25 +208,11 @@ function onScenarioChanged() {
   if (alertDesc) alertDesc.textContent = config.alert_desc;
   if (alertBadge) alertBadge.textContent = config.alert_badge;
 
-  // Update Situational Awareness KPIs
-  const speedEl = document.getElementById('kpiSpeed');
-  const queueEl = document.getElementById('kpiQueue');
-  const occEl = document.getElementById('kpiOcc');
-  const bypassEl = document.getElementById('kpiBypass');
-  const speedDelta = document.getElementById('kpiSpeedDelta');
-  const queueDelta = document.getElementById('kpiQueueDelta');
-  const occDelta = document.getElementById('kpiOccDelta');
-  const bypassDelta = document.getElementById('kpiBypassDelta');
-
-  if (speedEl) speedEl.textContent = `${config.speed_kmh} km/h`;
-  if (queueEl) queueEl.textContent = `${config.queue_m} m`;
-  if (occEl) occEl.textContent = `${Math.round(config.occupancy * 100)}%`;
-  if (bypassEl) bypassEl.textContent = `1,200 veh/h (${Math.round(config.bypass_occupancy * 100)}%)`;
-
-  if (speedDelta) speedDelta.textContent = config.speed_delta;
-  if (queueDelta) queueDelta.textContent = config.queue_delta;
-  if (occDelta) occDelta.textContent = config.occ_delta;
-  if (bypassDelta) bypassDelta.textContent = config.bypass_delta;
+  // Update Situational Awareness KPIs (single implementation, shared with initial load —
+  // the values used to be maintained in three places: the HTML markup, the SCENARIOS
+  // presets and state.trafficState, which inevitably drifted apart).
+  state.scenarioConfig = config;
+  renderSituationalAwareness();
 
   showToast(`已加载场景：${state.corridor} · ${state.congestionType}`, 'info');
   loadRoadNetwork();
@@ -370,18 +364,35 @@ function loadFallbackData() {
   renderCharts();
 }
 
-// Render Situational Awareness
+// Render Situational Awareness. Both the numbers and the deltas come from real sources:
+// the values from state.trafficState (the loaded baseline / selected scenario), the deltas
+// from the matching SCENARIOS preset. Nothing here is a hard-coded showcase figure.
 function renderSituationalAwareness() {
-  const s = state.trafficState;
+  const s = state.trafficState || {};
+  const cfg = state.scenarioConfig || SCENARIOS.corridor_arterial.incident_peak;
+
   const speedEl = document.getElementById('kpiSpeed');
   const queueEl = document.getElementById('kpiQueue');
   const occEl = document.getElementById('kpiOcc');
   const bypassEl = document.getElementById('kpiBypass');
+  const speedDelta = document.getElementById('kpiSpeedDelta');
+  const queueDelta = document.getElementById('kpiQueueDelta');
+  const occDelta = document.getElementById('kpiOccDelta');
+  const bypassDelta = document.getElementById('kpiBypassDelta');
 
-  if (speedEl) speedEl.textContent = `${s.speed_kmh} km/h`;
-  if (queueEl) queueEl.textContent = `${s.queue_m} m`;
-  if (occEl) occEl.textContent = `${Math.round(s.occupancy * 100)}%`;
-  if (bypassEl) bypassEl.textContent = `1,200 veh/h (${Math.round(s.bypass_occupancy * 100)}%)`;
+  if (speedEl) speedEl.textContent = s.speed_kmh === undefined || s.speed_kmh === null ? NO_DATA : `${s.speed_kmh} km/h`;
+  if (queueEl) queueEl.textContent = s.queue_m === undefined || s.queue_m === null ? NO_DATA : `${s.queue_m} m`;
+  if (occEl) occEl.textContent = s.occupancy === undefined || s.occupancy === null ? NO_DATA : `${Math.round(s.occupancy * 100)}%`;
+  if (bypassEl) {
+    bypassEl.textContent = s.bypass_occupancy === undefined || s.bypass_occupancy === null
+      ? NO_DATA
+      : `${CORRIDOR_BYPASS_SPARE_CAPACITY_VPH.toLocaleString('en-US')} veh/h (${Math.round(s.bypass_occupancy * 100)}%)`;
+  }
+
+  if (speedDelta) speedDelta.textContent = cfg.speed_delta || NO_DATA;
+  if (queueDelta) queueDelta.textContent = cfg.queue_delta || NO_DATA;
+  if (occDelta) occDelta.textContent = cfg.occ_delta || NO_DATA;
+  if (bypassDelta) bypassDelta.textContent = cfg.bypass_delta || NO_DATA;
 }
 
 // Render CoT Diagnosis Terminal
@@ -433,6 +444,11 @@ function renderStrategies() {
 // still rendered a full, confident-looking result.)
 const NO_DATA = '—';
 
+// Single source for every ECharts font size. Chart labels at the ECharts default (12px) were
+// noticeably undersized next to the rest of the UI on 1366px laptop panels; centralising the
+// values here keeps radar and time-series axes consistent and easy to tune.
+const CHART_FONT = { axis: 13, name: 13, legend: 13 };
+
 function numOrNull(v) {
   if (v === null || v === undefined || v === '' ) return null;
   const n = Number(v);
@@ -480,6 +496,55 @@ function renderRolloutKPIs() {
   if (speedAct) speedAct.textContent = speedK === null ? NO_DATA : `至 ${speedK} km/h`;
   if (tpAct) tpAct.textContent = tput === null ? NO_DATA : `达 ${tput} veh/h`;
   if (co2Act) co2Act.textContent = co2K === null ? NO_DATA : `降至 ${co2K} kg`;
+
+  // Overall effectiveness grade (F3). Was previously never written by any code path, so the
+  // header kept the static "综合评级：待推演评估" even after a successful run. The grade is
+  // Nonesafe: when the backend cannot compute it (e.g. no delay baseline) we fall back to an
+  // explicit "不可用" label rather than inventing a letter.
+  const ratingEl = document.getElementById('rolloutOverallRating');
+  if (ratingEl) {
+    const grade = comp?.overall_effectiveness_grade;
+    if (grade) {
+      const g = String(grade);
+      const glyph = g.startsWith('A') ? '🟢' : (g.startsWith('B') ? '🟡' : (g.startsWith('C') ? '🟠' : '🔴'));
+      ratingEl.textContent = `综合评级：${glyph} ${g}`;
+    } else if (comp) {
+      ratingEl.textContent = '综合评级：不可用（缺少基线对比指标）';
+    } else {
+      ratingEl.textContent = '综合评级：待推演评估';
+    }
+  }
+
+  renderHeroConclusion(comp, kpis);
+}
+
+// Hero conclusion card (F4). One plain-language sentence + the headline number, sourced only
+// from the payload the backend actually returned. Never invents a saving: if the comparison is
+// missing the card says so and the number stays as the NO_DATA dash.
+function renderHeroConclusion(comp, kpis) {
+  const heroValue = document.getElementById('heroValue');
+  const heroHeadline = document.getElementById('heroHeadline');
+  const heroSub = document.getElementById('heroSub');
+  if (!heroValue || !heroHeadline || !heroSub) return;
+
+  const delayV = numOrNull(comp?.delay_improvement_pct);
+  const delayS = numOrNull(kpis?.avg_delay_s);
+  const mode = state.rollout?.execution_mode || '';
+  const isLive = state.rollout?.degraded !== true && !mode.startsWith('calibrated');
+
+  if (delayV === null) {
+    heroValue.textContent = NO_DATA;
+    heroHeadline.textContent = '尚未获得方案 B 的对比结论 —— 请运行推演或检查执行模式与控制证据。';
+    heroSub.textContent = '本卡片只展示由工具或仿真实际计算出的数值；无数据时保持空态。';
+    return;
+  }
+
+  heroValue.textContent = `-${delayV}%`;
+  const delayPart = delayS === null ? '' : `，方案 B 实测车均延误降至 ${delayS} s/veh`;
+  heroHeadline.textContent = `启用智能体协同方案后，车均延误较基线降低 ${delayV}%${delayPart}。`;
+  heroSub.textContent = isLive
+    ? '数据来源：SUMO 微观物理推演（三方案同参数对照）。'
+    : '数据来源：标定经验模型（未运行物理沙盒），结论仅供方向性参考。';
 }
 
 // Show a prominent banner whenever the rollout payload is NOT a live SUMO measurement
@@ -628,21 +693,34 @@ function renderTimeSeriesChart() {
     return;
   }
 
+  const ts = state.rollout?.time_series;
+  const steps = ts?.time_steps;
+  const qBase = ts?.queue_baseline;
+  const qA = ts?.queue_strategy_a;
+  const qB = ts?.queue_strategy_b;
+
+  // No synthesised curve. This block used to fabricate 61 points with Math.pow whenever the
+  // rollout carried no time series, drawing a convincing "queue dissipation" chart that no
+  // simulation had produced — directly at odds with the NO_DATA policy used everywhere else,
+  // and the kind of "plausible output" that a reviewer would rightly call out.
+  if (!Array.isArray(steps) || steps.length === 0 || !Array.isArray(qB)) {
+    if (timeSeriesChartInstance) {
+      timeSeriesChartInstance.dispose();
+      timeSeriesChartInstance = null;
+    }
+    dom.innerHTML = '<div class="chart-empty">暂无推演时序数据（尚未运行推演，或本次推演未返回时间序列）。</div>';
+    return;
+  }
+
+  // Re-init cleanly: without disposing, every re-render (theme toggle, second run) stacked
+  // another ECharts instance on the same element.
+  if (timeSeriesChartInstance) {
+    timeSeriesChartInstance.dispose();
+    timeSeriesChartInstance = null;
+  }
+  dom.innerHTML = '';
   const isDark = state.theme === 'dark';
   timeSeriesChartInstance = echarts.init(dom, isDark ? 'dark' : null);
-
-  const ts = state.rollout?.time_series;
-  let steps = ts?.time_steps;
-  let qBase = ts?.queue_baseline;
-  let qA = ts?.queue_strategy_a;
-  let qB = ts?.queue_strategy_b;
-
-  if (!steps) {
-    steps = Array.from({ length: 61 }, (_, i) => i * 10);
-    qBase = steps.map(t => t < 150 ? 12 + t * 0.08 : (t <= 420 ? Math.min(242, 25 + Math.pow(t - 150, 1.35) * 0.22) : Math.max(75, 242 - (t - 420) * 0.8)));
-    qA = steps.map(t => t < 150 ? 12 + t * 0.07 : (t <= 420 ? Math.min(185, 22 + Math.pow(t - 150, 1.25) * 0.20) : Math.max(35, 185 - (t - 420) * 1.1)));
-    qB = steps.map(t => t < 150 ? 12 + t * 0.05 : (t <= 420 ? Math.min(105, 18 + Math.pow(t - 150, 1.10) * 0.16) : Math.max(10, 105 - (t - 420) * 1.6)));
-  }
 
   const option = {
     backgroundColor: 'transparent',
@@ -659,13 +737,13 @@ function renderTimeSeriesChart() {
     },
     legend: {
       bottom: 0,
-      textStyle: { color: isDark ? '#94a3b8' : '#475569', fontSize: 12 },
+      textStyle: { color: isDark ? '#94a3b8' : '#475569', fontSize: CHART_FONT.legend },
       data: ['基线 (Do-Nothing)', '方案A (Webster)', '方案B (Agent协同DSS)']
     },
     grid: {
       left: '3%',
       right: '4%',
-      top: '8%',
+      top: '10%',
       bottom: '12%',
       containLabel: true
     },
@@ -673,17 +751,18 @@ function renderTimeSeriesChart() {
       type: 'category',
       data: steps,
       name: '秒',
+      nameTextStyle: { color: isDark ? '#94a3b8' : '#64748b', fontSize: CHART_FONT.name },
       axisLine: { lineStyle: { color: isDark ? '#334155' : '#cbd5e1' } },
-      axisLabel: { color: isDark ? '#94a3b8' : '#64748b', fontSize: 12 }
+      axisLabel: { color: isDark ? '#94a3b8' : '#64748b', fontSize: CHART_FONT.axis }
     },
     yAxis: {
       type: 'value',
       name: '排队长度 (m)',
-      nameTextStyle: { color: isDark ? '#94a3b8' : '#64748b', fontSize: 12 },
+      nameTextStyle: { color: isDark ? '#94a3b8' : '#64748b', fontSize: CHART_FONT.name },
       splitLine: {
         lineStyle: { color: isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.08)' }
       },
-      axisLabel: { color: isDark ? '#94a3b8' : '#64748b', fontSize: 12 }
+      axisLabel: { color: isDark ? '#94a3b8' : '#64748b', fontSize: CHART_FONT.axis }
     },
     series: [
       {
@@ -736,6 +815,61 @@ function renderCanvasTimeSeriesFallback(dom) {
   dom.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:13px;">ECharts CDN 离线，已启用原生轻量时序视图</div>';
 }
 
+// Progress veil (F13) + chain-of-thought status text (F2) helpers.
+// A full four-stage pipeline (diagnose → strategies → mirror SUMO rollout → report) can take
+// tens of seconds with no intermediate feedback beyond a toast, which reads as "frozen". The
+// veil shows the current stage and an elapsed timer; cotStatusText keeps the terminal header
+// honest (IDLE → RUNNING → CONVERGED/FAILED) instead of a permanently static label.
+const TASK_VEIL_STEPS = [
+  { at: 0,    fill: 8,  text: '解析路网态势并执行思维链诊断…' },
+  { at: 1200, fill: 28, text: '调用交通工程工具合成候选策略…' },
+  { at: 3000, fill: 55, text: '并行执行多方案数字孪生沙盒推演…' },
+  { at: 9000, fill: 78, text: 'A/B 量化评估与导出决策报告…' },
+  { at: 20000, fill: 92, text: '仍在计算中（SUMO 微观推演耗时较长）…' }
+];
+let taskVeilTimerId = null;
+let taskVeilStart = 0;
+
+function setCotStatus(text, kind) {
+  const el = document.getElementById('cotStatusText');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.remove('status-idle', 'status-running', 'status-done', 'status-failed');
+  if (kind) el.classList.add(`status-${kind}`);
+}
+
+function showTaskVeil() {
+  const veil = document.getElementById('taskVeil');
+  if (!veil) return;
+  const stepEl = document.getElementById('taskVeilStep');
+  const timerEl = document.getElementById('taskVeilTimer');
+  const fillEl = document.getElementById('taskVeilFill');
+  veil.classList.add('visible');
+  taskVeilStart = Date.now();
+  if (taskVeilTimerId) clearInterval(taskVeilTimerId);
+  taskVeilTimerId = setInterval(() => {
+    const elapsed = Date.now() - taskVeilStart;
+    if (timerEl) timerEl.textContent = `${(elapsed / 1000).toFixed(1)}s`;
+    let current = TASK_VEIL_STEPS[0];
+    for (const s of TASK_VEIL_STEPS) {
+      if (elapsed >= s.at) current = s;
+    }
+    if (stepEl && stepEl.textContent !== current.text) stepEl.textContent = current.text;
+    if (fillEl) fillEl.style.width = `${current.fill}%`;
+  }, 200);
+}
+
+function hideTaskVeil() {
+  const veil = document.getElementById('taskVeil');
+  if (taskVeilTimerId) {
+    clearInterval(taskVeilTimerId);
+    taskVeilTimerId = null;
+  }
+  if (veil) veil.classList.remove('visible');
+  const fillEl = document.getElementById('taskVeilFill');
+  if (fillEl) fillEl.style.width = '100%';
+}
+
 // End-to-End Decision Pipeline Execution
 async function executeAgentDecisionPipeline() {
   const btn = document.getElementById('runSimulationBtn');
@@ -743,6 +877,9 @@ async function executeAgentDecisionPipeline() {
     btn.classList.add('loading');
     btn.disabled = true;
   }
+
+  setCotStatus('STATUS: RUNNING', 'running');
+  showTaskVeil();
 
   try {
     showToast('🧠 智能体正在解析路网态势并执行思维链诊断...', 'info');
@@ -831,6 +968,7 @@ async function executeAgentDecisionPipeline() {
       await fetchDecisionReport();
 
       const delayImp = numOrNull(rolloutData.comparisons?.strategy_b?.delay_improvement_pct);
+      setCotStatus('STATUS: CONVERGED', 'done');
       showToast(
         delayImp === null
           ? '推演完成，但未返回方案 B 的对比指标，请检查执行模式与控制证据。'
@@ -839,11 +977,14 @@ async function executeAgentDecisionPipeline() {
       );
     } else {
       const err = await rolloutRes.json();
+      setCotStatus('STATUS: FAILED', 'failed');
       showToast(`推演错误: ${err.detail || '未知异常'}`, 'error');
     }
   } catch (err) {
+    setCotStatus('STATUS: FAILED', 'failed');
     showToast(`网络请求异常: ${err.message}`, 'error');
   } finally {
+    hideTaskVeil();
     if (btn) {
       btn.classList.remove('loading');
       btn.disabled = false;
@@ -1368,41 +1509,58 @@ function renderDetectorTable(detectors, engine) {
   attachDetectorSortHandlers();
 }
 
+// Detector-table sorting (F7). Two defects lived here:
+//   1. attachDetectorSortHandlers() was called from inside renderDetectorTable(), so every
+//      rollout added one more click listener per header — after N runs a single click ran the
+//      sort N times (toggle direction visibly flickered). Binding is now done ONCE, and the
+//      table body itself is replaced on each render, so delegation survives re-renders.
+//   2. The guard `!rows[0].querySelector('.detector-placeholder') === false` was inverted by
+//      operator precedence: it evaluated as `(!x) === false`, entering the sort branch for the
+//      placeholder row and skipping it for real rows — i.e. sorting never worked.
 function attachDetectorSortHandlers() {
-  const headers = document.querySelectorAll('#detectorTable thead th[data-sort]');
-  headers.forEach(th => {
-    th.addEventListener('click', () => {
-      const key = th.getAttribute('data-sort');
-      const tbody = document.getElementById('detectorTableBody');
-      if (!tbody) return;
+  const table = document.getElementById('detectorTable');
+  if (!table || table.dataset.sortBound === '1') return;
+  table.dataset.sortBound = '1';
 
-      // Toggle sort direction
-      const isAsc = !th.classList.contains('sorted-asc');
-      // Clear previous sort
-      headers.forEach(h => { h.classList.remove('sorted-asc', 'sorted-desc'); });
-      th.classList.add(isAsc ? 'sorted-asc' : 'sorted-desc');
+  const thead = table.querySelector('thead');
+  if (!thead) return;
 
-      // Get table data
-      const rows = Array.from(tbody.querySelectorAll('tr'));
-      if (rows.length === 0 || !rows[0].querySelector('.detector-placeholder') === false) {
-        // Sort the rows
-        rows.sort((a, b) => {
-          const aIdx = Array.from(a.children).findIndex(c => c === th.parentNode.querySelector(`th[data-sort="${key}"]`));
-          const bIdx = Array.from(b.children).findIndex(c => c === th.parentNode.querySelector(`th[data-sort="${key}"]`));
-          if (aIdx === -1 || bIdx === -1) return 0;
-          const aVal = a.children[aIdx]?.textContent?.trim?.();
-          const bVal = b.children[bIdx]?.textContent?.trim?.();
-          // Try numeric
-          const aNum = parseFloat(aVal);
-          const bNum = parseFloat(bVal);
-          if (!isNaN(aNum) && !isNaN(bNum)) {
-            return isAsc ? aNum - bNum : bNum - aNum;
-          }
-          return isAsc ? String(aVal).localeCompare(String(bVal), 'zh') : String(bVal).localeCompare(String(aVal), 'zh');
-        });
-        rows.forEach(r => tbody.appendChild(r));
-      }
+  thead.addEventListener('click', (ev) => {
+    const th = ev.target.closest('th[data-sort]');
+    if (!th) return;
+    const key = th.getAttribute('data-sort');
+    const tbody = document.getElementById('detectorTableBody');
+    if (!tbody) return;
+
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    // Nothing to sort: empty body, or the single placeholder row.
+    if (rows.length === 0 || rows[0].querySelector('.detector-placeholder')) {
+      return;
+    }
+
+    const isAsc = !th.classList.contains('sorted-asc');
+    Array.from(thead.querySelectorAll('th[data-sort]')).forEach(h => {
+      h.classList.remove('sorted-asc', 'sorted-desc');
+      h.removeAttribute('aria-sort');
     });
+    th.classList.add(isAsc ? 'sorted-asc' : 'sorted-desc');
+    th.setAttribute('aria-sort', isAsc ? 'ascending' : 'descending');
+
+    const colIdx = Array.from(th.parentNode.children).indexOf(th);
+
+    rows.sort((a, b) => {
+      const aVal = a.children[colIdx]?.textContent?.trim?.() ?? '';
+      const bVal = b.children[colIdx]?.textContent?.trim?.() ?? '';
+      const aNum = parseFloat(aVal);
+      const bNum = parseFloat(bVal);
+      if (!isNaN(aNum) && !isNaN(bNum)) {
+        return isAsc ? aNum - bNum : bNum - aNum;
+      }
+      return isAsc
+        ? String(aVal).localeCompare(String(bVal), 'zh')
+        : String(bVal).localeCompare(String(aVal), 'zh');
+    });
+    rows.forEach(r => tbody.appendChild(r));
   });
 }
 
@@ -1462,9 +1620,15 @@ function initLlmModal() {
   }
 
   // Open modal & prefill current values
+  let lastFocused = null;
+
   openBtn.addEventListener('click', async () => {
+    lastFocused = document.activeElement;
     modal.style.display = 'flex';
     hideStatus();
+    // Move focus into the dialog so keyboard/screen-reader users land inside it (F14).
+    const firstField = baseUrlInput || closeBtn;
+    if (firstField) setTimeout(() => firstField.focus(), 30);
     try {
       const res = await fetch('/api/llm/config');
       if (res.ok) {
@@ -1489,11 +1653,38 @@ function initLlmModal() {
   function closeModal() {
     modal.style.display = 'none';
     hideStatus();
+    if (lastFocused && typeof lastFocused.focus === 'function') lastFocused.focus();
   }
   if (closeBtn) closeBtn.addEventListener('click', closeModal);
   if (cancelBtn) cancelBtn.addEventListener('click', closeModal);
   modal.addEventListener('click', (e) => {
     if (e.target === modal) closeModal();
+  });
+
+  // Esc to close + focus trap while the dialog is open (F14). Without the trap, Tab walked
+  // straight out of the dialog into the dimmed page behind it.
+  modal.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeModal();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    const focusables = Array.from(
+      modal.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+    ).filter(el => el.offsetParent !== null);
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
   });
 
   // Quick provider tags click

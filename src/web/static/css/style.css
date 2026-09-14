@@ -22,9 +22,12 @@
   --accent-red: #ef4444;
   --accent-red-glow: rgba(239, 68, 68, 0.2);
   --accent-purple: #8b5cf6;
+  --accent-purple-glow: rgba(139, 92, 246, 0.25);
 
   --terminal-bg: #030712;
   --terminal-text: #38bdf8;
+  --terminal-muted: #94a3b8;
+  --terminal-text-strong: #e2e8f0;
 
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
@@ -57,9 +60,14 @@
   --accent-red: #dc2626;
   --accent-red-glow: rgba(220, 38, 38, 0.15);
   --accent-purple: #7c3aed;
+  --accent-purple-glow: rgba(124, 58, 237, 0.15);
 
   --terminal-bg: #1e293b;
   --terminal-text: #7dd3fc;
+  /* The terminal window keeps a dark surface in both themes, so its内部文字 uses its own
+     muted/strong tokens rather than the page text tokens (which invert with the theme). */
+  --terminal-muted: #94a3b8;
+  --terminal-text-strong: #e2e8f0;
 
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
@@ -70,7 +78,49 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+}
+
+/* Colour transitions are declared on a small, explicit set of surfaces instead of the
+   universal selector. `* { transition: ... }` animated every node on the page — a theme
+   switch or a map/SVG redraw transitioned thousands of elements at once, which showed up
+   as lag and ghosting on the projector. */
+body,
+.panel-card,
+.kpi-card,
+.chart-card,
+.strategy-card,
+.detector-panel,
+.rollout-kpi-pill,
+.status-badge,
+.theme-toggle,
+.btn-primary,
+.btn-secondary,
+.btn-llm-settings,
+.form-select,
+.form-input,
+.map-route-btn,
+.terminal-window,
+.report-card {
   transition: background-color 0.2s ease, border-color 0.2s ease, color 0.15s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Visible keyboard focus everywhere (previously the app had no :focus-visible rule, so
+   tabbing through controls gave no indication of where you were). */
+:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 body {
@@ -187,16 +237,40 @@ body {
 /* Layout Grid */
 .app-container {
   display: grid;
-  grid-template-columns: 340px 1fr;
+  /* minmax(0, 1fr) instead of 1fr: a grid track defaults to min-width:auto, so one
+     unbreakable value inside the content column could make the track wider than the
+     viewport — that is what pushed the document to 1459px at a 1366px viewport and got
+     the 4th KPI card clipped by `body { overflow-x: hidden }`. */
+  grid-template-columns: 340px minmax(0, 1fr);
   gap: 24px;
   padding: 24px 28px;
   max-width: 1780px;
   margin: 0 auto;
 }
 
+.main-content,
+.sidebar-panel,
+.panel-card,
+.kpi-card,
+.chart-card,
+.rollout-kpi-pill,
+.strategy-card,
+.action-checklist-panel,
+.detector-panel {
+  min-width: 0;
+}
+
+@media (max-width: 1400px) {
+  .app-container {
+    grid-template-columns: 300px minmax(0, 1fr);
+    gap: 18px;
+    padding: 20px;
+  }
+}
+
 @media (max-width: 1200px) {
   .app-container {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -481,13 +555,21 @@ input:checked + .switch-slider:before {
 /* KPI Cards Row */
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* auto-fit keeps four columns on a 1080p projector but lets the row reflow instead of
+     overflowing on narrower displays (1366x768 laptop, split-screen demo). */
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 16px;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1200px) {
   .kpi-grid {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .kpi-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -535,6 +617,10 @@ input:checked + .switch-slider:before {
   font-weight: 700;
   color: var(--text-primary);
   letter-spacing: -0.5px;
+  /* Monospaced digits: without this the numbers reflow on every 5-second refresh,
+     so a dashboard left on screen visibly jitters. */
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 .kpi-delta {
@@ -594,13 +680,20 @@ input:checked + .switch-slider:before {
 .terminal-title {
   font-family: 'Consolas', 'Courier New', monospace;
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--terminal-muted);
 }
 
 .terminal-actions {
   font-size: 11px;
-  color: #64748b;
+  font-weight: 600;
+  color: var(--terminal-muted);
+  font-family: 'Consolas', 'Courier New', monospace;
 }
+
+.terminal-actions.status-idle { color: var(--text-muted); }
+.terminal-actions.status-running { color: var(--accent-amber); }
+.terminal-actions.status-done { color: var(--accent-green); }
+.terminal-actions.status-failed { color: var(--accent-red); }
 
 .terminal-body {
   padding: 16px 20px;
@@ -628,7 +721,7 @@ input:checked + .switch-slider:before {
 }
 
 .cot-step-text {
-  color: #e2e8f0;
+  color: var(--terminal-text-strong);
 }
 
 /* Strategy Formulation Grid */
@@ -743,9 +836,12 @@ input:checked + .switch-slider:before {
   margin-bottom: 14px;
   padding: 10px 14px;
   border-radius: var(--radius-md);
-  border: 1px solid rgba(239, 68, 68, 0.55);
-  background: rgba(239, 68, 68, 0.12);
-  color: #f87171;
+  /* Theme tokens, not hard-coded light red: #f87171 on the dark card was legible, but on
+     the light theme's white card it was a pale-on-pale warning (and the light theme had
+     no matching border/background pair at all). */
+  border: 1px solid var(--accent-red);
+  background: var(--accent-red-glow);
+  color: var(--accent-red);
   font-size: 14px;
   font-weight: 600;
   line-height: 1.6;
@@ -784,9 +880,10 @@ input:checked + .switch-slider:before {
 }
 
 .rollout-kpi-imp {
-  font-size: 18px;
+  font-size: 22px;
   font-weight: 700;
   color: var(--accent-green);
+  font-variant-numeric: tabular-nums;
 }
 
 .rollout-kpi-actual {
@@ -1350,15 +1447,17 @@ input:checked + .switch-slider:before {
   padding: 7px 14px;
   font-size: 14px;
   font-weight: 600;
-  color: #e2e8f0;
-  background: rgba(56, 189, 248, 0.14);
-  border: 1px solid rgba(56, 189, 248, 0.45);
+  /* Was a hard-coded #e2e8f0: near-white text on a near-white card made this button
+     effectively invisible in the light theme. */
+  color: var(--text-primary);
+  background: var(--accent-blue-glow);
+  border: 1px solid var(--accent-blue);
   border-radius: var(--radius-sm, 8px);
   cursor: pointer;
   transition: background 0.2s ease;
 }
 
-.map-route-btn:hover:not(:disabled) { background: rgba(56, 189, 248, 0.26); }
+.map-route-btn:hover:not(:disabled) { background: var(--accent-blue-glow); filter: brightness(1.15); }
 
 .map-route-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 
@@ -1734,12 +1833,11 @@ input:checked + .switch-slider:before {
   padding: 9px 12px;
   color: var(--text-secondary);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
-.detector-table tbody tr:hover td {
-  background: var(--bg-card-hover);
-}
-
+/* (a second, identical `.detector-table tbody tr:hover td` block used to be repeated
+   immediately below — dead duplication, removed.) */
 .detector-table tbody tr:hover td {
   background: var(--bg-card-hover);
 }
@@ -1784,3 +1882,88 @@ input:checked + .switch-slider:before {
   border-color: var(--accent-blue) !important;
 }
 
+/* ==========================================================================
+   Hero decision conclusion card (Section 4)
+   The headline result used to sit as an 18px pill among five siblings while purely
+   decorative figures rendered at 28px, so the visual hierarchy pointed away from the
+   actual conclusion. This card states it once, large, together with its data source.
+   ========================================================================== */
+.hero-conclusion {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 18px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-left: 4px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.hero-conclusion.is-positive { border-left-color: var(--accent-green); }
+.hero-conclusion.is-negative { border-left-color: var(--accent-red); }
+
+.hero-value {
+  font-size: 44px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -1px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.hero-value.is-positive { color: var(--accent-green); }
+.hero-value.is-negative { color: var(--accent-red); }
+
+.hero-label { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+.hero-headline { font-size: 16px; font-weight: 700; color: var(--text-primary); line-height: 1.5; }
+.hero-sub { font-size: 12.5px; color: var(--text-secondary); margin-top: 3px; }
+
+@media (max-width: 640px) {
+  .hero-conclusion { grid-template-columns: minmax(0, 1fr); }
+  .hero-value { font-size: 34px; }
+}
+
+/* ==========================================================================
+   Long-task progress veil
+   A SUMO rollout takes tens of seconds; previously the only feedback was a button
+   spinner plus a toast, so an audience could not tell "still computing" from "frozen".
+   ========================================================================== */
+.task-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(3, 7, 18, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+.task-veil.visible { display: flex; }
+
+.task-veil-card {
+  min-width: 320px;
+  max-width: 90vw;
+  padding: 22px 26px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-lg);
+  text-align: center;
+}
+
+.task-veil-title { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+.task-veil-step { font-size: 13px; color: var(--text-secondary); margin-top: 6px; min-height: 20px; }
+.task-veil-timer {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--accent-blue);
+  margin-top: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.task-veil-track { height: 4px; border-radius: 4px; background: var(--bg-card-inner); margin-top: 14px; overflow: hidden; }
+.task-veil-fill { height: 100%; width: 8%; background: var(--accent-blue); transition: width 0.4s ease; }
+.task-veil-note { font-size: 11.5px; color: var(--text-muted); margin-top: 10px; }

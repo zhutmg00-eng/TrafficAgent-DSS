@@ -1,5 +1,10 @@
 from playwright.sync_api import Page, expect
 
+import pytest
+
+pytestmark = pytest.mark.e2e
+
+
 
 def test_llm_modal_open_and_close(page: Page, base_url: str):
     """Verify opening and closing the LLM settings modal dialog."""

@@ -1,5 +1,10 @@
 from playwright.sync_api import Page, expect
 
+import pytest
+
+pytestmark = pytest.mark.e2e
+
+
 
 def test_action_playbook_rendering(page: Page, base_url: str):
     """Verify Section 7 7-step Action Checklist loads and displays actionable instructions."""

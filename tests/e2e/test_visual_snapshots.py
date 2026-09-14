@@ -1,6 +1,11 @@
 import os
 from playwright.sync_api import Page
 
+import pytest
+
+pytestmark = pytest.mark.e2e
+
+
 
 def test_capture_multi_resolution_and_theme_snapshots(page: Page, base_url: str):
     """Capture responsive multi-resolution and theme visual regression snapshots."""

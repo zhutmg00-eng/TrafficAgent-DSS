@@ -9,6 +9,120 @@
 
 ---
 
+## [2026-09-13] v2.2.2：输出诚信专项整改（后端 B1–B14 / 前端 F1–F17）+ 事件循环阻塞与 CSS 静默失效修复
+
+**主题**：以只读审计方式对 v2.2.1 全量代码做了一轮「输出与事实是否一致」的专项体检，共定位 14 项后端缺陷与 17 项前端缺陷。核心原则仍是**绝不输出任何未经计算的数字**：凡是缺数据一律显示空态（`—`），绝不回退到「看起来合理」的展示常量；同时修复了两个会直接影响演示的工程问题——**FastAPI 事件循环被 SUMO 长时间阻塞**、以及**Windows 注册表污染导致全站 CSS 静默失效**。
+
+**影响文件**：`src/web/app.py`、`src/web/network_api.py`、`src/agents/traffic_agent.py`、`src/tools/evaluator.py`、`src/simulation/sumo_sandbox.py`、`src/web/static/index.html`、`src/web/static/js/dashboard.js`、`src/web/static/css/style.css`、`src/web/static/favicon.svg`（新增）、`pytest.ini`（新增）、`tests/e2e/*.py`、`scripts/run_e2e.py`、`tests/test_web_api.py`、`CHANGELOG.md`
+
+**兼容性**：
+1. **接口契约收紧（注意）**：当基线数据缺失时，`/api/evaluate/compare`、（雷达/评级相关的）`radar_scores`、`overall_effectiveness_grade`、`improvement_pct` 系列字段会返回 **`null`** 而非 `0.0` / `10.0`。前端已同步按空态渲染。调用方若之前把 0 当作"没提升"，需改为判断 `null`。
+2. **燃料口径修正（数值会变）**：`sumo_sandbox` 输出的 `total_fuel_ml` 别名（实际单位是 mg，约 1000 倍误差）已移除，改为按 mg 换算的 `total_fuel_liters`。读取 `total_fuel_ml` 的旧代码需改用 `total_fuel_mg` 或 `total_fuel_liters`。
+3. **降级语义更严格**：`/api/network/action-plan` 在内部失败时由「`success: true` + 空清单」改为 **HTTP 503**，避免"看起来成功但其实没数据"。
+4. 其余功能与接口路径完全保留，113 项核心测试 100% 通过。
+
+---
+
+### 一、后端：输出诚信与稳健性（B1–B14）
+
+**B1｜报告章节口径硬编码**：决策报告第二段无论实际执行的是 SUMO 微观、中观还是标定数据，都固定写"通过 SUMO 高保真微观物理推演"。现改为按 `execution_mode` 条件渲染，标定模式明确标注为经验模型。
+
+**B2｜建议结论写死**：无论方案 B 是否真的优于基线，报告都推荐"全面启用方案 B"。现改为数据驱动：`delay_pct > 0` 才建议启用；为 `null` 时标注"不可用"；`<= 0` 时明确写"不建议全面启用方案 B"。
+
+**B3 / B4｜行动方案数值占位符**：`formulate_action_plan` 用字符串 `"—"` 顶替缺失的配时参数，随后又参与浮点运算，既可能抛出 `TypeError`，也会产出 `"— 秒"` 这类非法文本。现统一改为 `Optional[float]` + 安全格式化，缺值时不参与运算、直接空态。
+
+**B5｜推演用了错误的路网状态**：前端传入的检测器状态在 `execute_rollout` 内部被丢弃，实际用默认 165 m 排队长度重建了一份状态，导致「屏幕上的数字」与「参与推演的数字」不一致。现抽出 `_run_rollout(cfg, state_dict)`，把同一份状态贯穿到仿真中。
+
+**B9｜异常吞没**：物理推演后的结果整形代码只捕获了很窄的异常类型，整形失败会静默返回一组空值。现改为让整形异常上抛为 **HTTP 500**，并单独保留「物理环境缺失」的显式降级路径（`_degrade_rollout` / `_build_physical_rollout_payload`）。
+
+**B10｜雷达图兜底常量**：`network_api._radar()` 在无数据时回退到 `[92,95,88,90,85]` —— 一个"看着很漂亮"的假分数。现改为返回 `null`。
+
+**B11｜行动清单假成功**：见兼容性第 3 条。
+
+**B12｜燃料单位错标**：见兼容性第 2 条。
+
+**B14｜百度接口缓存竞态与泄漏**：进程级缓存无锁、无上限、无过期，并发下会读到半写状态并无限增长。现改为 `threading.Lock` + TTL + 上限 256 条。
+
+**B6–B8 / B13｜评测器空值语义统一**：`compute_summary_kpi` 在原始指标缺失时不再返回 `[0.0]` / `[10.0]` 这类"零值即结论"，而是返回 `None`；单样本时 `delay_variance` 返回 `None`；`compare_schemes` 在无基线时百分比返回 `None`。新增 `_samples()` 统一清洗非有限值。
+
+---
+
+### 二、工程：两个会直接影响演示的问题
+
+**（1）SUMO 推演阻塞 FastAPI 事件循环**：`/api/rollout`、`/api/diagnose`、`/api/strategies`、`/api/evaluate/multi-seed`、报告导出等多秒级耗时处理函数此前是 `async def`，但其内部是纯阻塞调用（SUMO 进程、文件 IO），会把整个 ASGI 事件循环卡住——表现为推演期间**页面所有其他请求（含静态资源）一起卡死**。现将这批处理函数改为同步 `def`，交给 FastAPI 的线程池执行，事件循环恢复可用。
+
+**（2）Windows 注册表污染导致全站 CSS 静默失效**：在部分机器上（如装有联想电脑管家的环境），`HKCR\.css` 被第三方安装包改写为 `application/x-css`，Python `mimetypes` 在 Windows 上直接读注册表，于是 FastAPI 把 `style.css` 以 `application/x-css` 返回，Chrome 判定 MIME 不合法、**拒绝应用全部样式**（0 条规则生效），页面裸奔但控制台无报错。现于 `app.py` 导入期强制 `mimetypes.add_type("text/css", ".css")`，与操作系统注册表解耦。
+
+---
+
+### 三、前端：空态诚信与交互可用性（F1–F17）
+
+**F1｜时序图伪造曲线**：推演未返回时间序列时，前端用 `Math.pow` 合成 61 个点，画出"排队消散"曲线——一条任何仿真都没算过的曲线。现改为空态提示「暂无推演时序数据」。
+
+**F2｜状态文本写死**：终端头固定显示 `STATUS: CONVERGED`，即使一次都没跑过。现接入流水线真实状态：`IDLE → RUNNING → CONVERGED / FAILED`，并配色区分。
+
+**F3｜综合评级从未被写入**：`#rolloutOverallRating` 没有任何代码赋值，成功后仍显示"待推演评估"。现按后端返回的 `overall_effectiveness_grade` 渲染；为 `null` 时显示"不可用（缺少基线对比指标）"。
+
+**F4｜缺少结论卡**：新增 `.hero-conclusion` 结论卡，一行话 + 头条数字，只引用后端真实返回值，并标注数据来源（SUMO 微观 / 标定经验）。
+
+**F6｜主题闪烁**：首屏内联脚本的默认值由 `'light'` 改为 `'dark'`，消除暗色用户打开页面时的白屏闪烁。
+
+**F7｜检测器表格排序双重缺陷**：
+- 监听器在每次渲染时重复绑定，跑 N 次后单击表头会触发 N 次排序（方向来回跳）；
+- 守卫条件 `!rows[0].querySelector(...) === false` 因运算符优先级被反解，导致**排序从未真正生效**。
+现改为**一次性事件委托**（`dataset.sortBound` 幂等保护）+ 修正守卫逻辑 + 补充 `aria-sort`。
+
+**F13｜长任务无反馈**：四段式流水线（诊断→策略→推演→报告）耗时可达数十秒，只弹一个 toast。现新增全屏进度遮罩：分阶段文案 + 秒级计时 + 进度条，SUMO 阶段给出明确提示。
+
+**F14｜弹窗无障碍**：LLM 配置弹窗缺 `role="dialog"` / `aria-modal`，Esc 无法关闭，Tab 会跑到遮罩后面的页面上。现补全语义角色 + Esc 关闭 + 焦点陷阱 + 关闭后焦点归位。
+
+**F17｜favicon 404**：新增品牌图标 `favicon.svg` 并由 `GET /favicon.ico` 提供。
+
+**其余（F5 / F8–F12 / F15 / F16）**：KPI 网格改 `repeat(auto-fit, minmax(190px, 1fr))`、`.app-container` 用 `minmax(0, 1fr)` + 内容卡 `min-width:0` 修复 1366px 横向溢出；关键数字统一 `tabular-nums` 消除跳动；移除 `* { transition }` 全局声明并补 `prefers-reduced-motion` / `:focus-visible`；清理重复与失效 CSS；补全未定义的设计令牌（`--accent-purple-glow`、终端色令牌）；修复浅色主题下 `#e2e8f0` 导致按钮文字不可见；KPI 卡初始值不再硬编码展示数字。
+
+---
+
+### 四、测试入口健壮性（T1–T3）
+
+**T1｜`pytest` 裸跑会被拖入重量级 E2E 并卡死**：`tests/e2e/` 没有标记，仓库也没有 `pytest.ini`，于是任何人敲一个 `pytest`，pytest 都会把 14 项 Playwright 浏览器用例一起收进来——单轮数分钟，而且**跑完之后进程不返回**（见 T3）。现在新增 `pytest.ini`：`testpaths = tests` + `addopts = -m "not e2e"`，默认 `pytest` 只跑快速回归（113 项，约 45 秒，干净退出）。
+
+**T2｜E2E 用例缺正式标记**：为 `tests/e2e/` 下 6 个模块统一加上 `pytestmark = pytest.mark.e2e`，并在 `pytest.ini` 注册 `e2e` marker；`scripts/run_e2e.py` 同步改为显式传 `-m e2e`（命令行 `-m` 覆盖 `addopts` 里的默认排除），保证 E2E 仍可一键执行。
+
+**T3｜Chromium 回收导致 E2E 进程不退出（未修复，如实记录）**：定位结论如下——
+- 现象：`pytest tests/e2e` 能打出 **14 个通过点（无 F/E）**，但进程此后不返回；`unittest discover`（CI 命令）与纯 `pytest`（仅核心用例）都干净退出。
+- 二分定位：用最小复现脚本逐层剥离，确认 `plain`（无框架）0.3 s 干净退出；仅 `playwright.sync_api` 打开一个页面并关闭时，`browser.close()` **不再返回**——说明卡点在**浏览器侧进程回收**，与本项目代码、与 `tests/e2e/conftest.py` 的 uvicorn 线程、与本次「同步 `def` 处理器」改动均无关（同步/异步两种处理器的最小复现都在 1.2 s 内干净退出）。
+- 结论：这是本机沙箱环境下的 Chromium teardown 问题，**用例本身全部通过**，只有进程退出被阻塞。
+- 应对：按 T1 把 E2E 从默认回归路径隔离；CI 与本地日常回归统一走 113 项核心用例。后续可在 CI（ubuntu-latest，无此沙箱限制）上直接跑 E2E 复验。
+
+---
+
+### 五、如何验证
+
+```bash
+# 1) 核心单元 + 接口测试（113 项，CI 同名命令，约 45 秒，干净退出）
+python -m unittest discover -s tests -p "test_*.py"
+#    或等价：pytest          （2026-09-13 起默认只跑核心 113 项）
+
+# 2) 浏览器端到端（Playwright，14 项）
+python scripts/run_e2e.py
+#    若本机出现"用例全绿但进程不退出"，见上文 T3（Chromium 回收限制，非用例失败）
+```
+
+关键人工核验点：
+- 不勾选「微观 SUMO 推演」直接点「启动智能体诊断与推演」→ 页面顶部应出现**降级横幅**，结论卡数据来源应显示"标定经验模型"；
+- 推演期间手动刷新其他页面标签 / 访问 `/api/status` → 应即时响应（事件循环未被阻塞）；
+- 浏览器 DevTools → Network → `style.css` 的 `Content-Type` 必须是 `text/css`；
+- 检测器表格点击任意带排序表头 → 应正常升/降序，且重复点击方向交替（不再抖动）；
+- 终端头状态应从 `STATUS: IDLE` 依次变为 `RUNNING` → `CONVERGED`（失败时为 `FAILED`）。
+
+### 六、已知限制与后续待办
+- 本次未改动仿真物理模型与绿波算法，仅做输出诚信与工程稳健性整改；因此方案 B 相对基线的数值结论与 v2.2.1 一致。
+- E2E 进程退出挂起见 T3，属环境限制，建议在 CI（Linux）上复验。
+- `tests/test_system.py` 中部分夹具仍构造 `total_fuel_ml` 字段（评测器已不再读取该键），后续可统一清理为 `total_fuel_mg`。
+- 前端仍有三处数字需人工保持同步（KPI 卡 / 结论卡 / 决策报告），后续可考虑改为单一数据源统一渲染（F16 的完全体）。
+
+---
+
 ## [2026-09-13] v2.2.1：引入 Microsoft Playwright 浏览器端到端（E2E）测试体系 + 根治前端 JS 变量提升堆栈溢出 Bug
 
 **主题**：响应前端可视化验证与工程质量需求，正式接入 **Microsoft Playwright (Python)** 浏览器自动化测试套件（`tests/e2e/`），覆盖数字孪生大屏全景渲染、双轨地图挂载、大模型热切换弹窗、7步实操行动清单手风琴与推演流水线验证。在实机测试过程中精准定位并彻底消除了前端 `dashboard.js` 中因函数声明提升（Hoisting）导致的 `RangeError: Maximum call stack size exceeded` 页面初始化死循环。全量测试提升至 **127 项 100% 通过**（113 项核心单元/API + 14 项 Playwright 前端 E2E）。

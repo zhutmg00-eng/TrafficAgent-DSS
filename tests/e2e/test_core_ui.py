@@ -1,6 +1,11 @@
 import os
 from playwright.sync_api import Page, expect
 
+import pytest
+
+pytestmark = pytest.mark.e2e
+
+
 
 def test_dashboard_initial_rendering(page: Page, base_url: str):
     """Verify that the dashboard loads completely with brand headers and correct initial state."""

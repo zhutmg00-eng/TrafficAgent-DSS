@@ -7,11 +7,15 @@
   <meta name="description" content="2026年第十六届北京市大学生交通科技大赛 · ITSAC 2026 创新挑战赛（赛题2）高品质决策支持系统">
   <!-- Stylesheet -->
   <link rel="stylesheet" href="/static/css/style.css">
-  <!-- 在 CSS 渲染前确定主题，避免刷新时闪现错误底色（默认浅色「政企」主题） -->
+  <!-- Brand favicon (previously absent: /favicon.ico returned 404 in the browser tab) -->
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <!-- 在 CSS 渲染前确定主题，避免刷新时闪现错误底色。
+       默认主题必须与 :root（深色）以及 dashboard.js 的 state.theme 默认值一致：
+       这三处曾经一处写 light、两处写 dark，导致首屏先浅后深闪一下。 -->
   <script>
     document.documentElement.setAttribute(
       'data-theme',
-      localStorage.getItem('traffic_dss_theme') || 'light'
+      localStorage.getItem('traffic_dss_theme') || 'dark'
     );
   </script>
   <!-- ECharts 5 Library: Local Vendor First with CDN Fallback -->
@@ -180,29 +184,33 @@
           <span style="font-size:13px;color:var(--text-muted);">车道级线圈与卡口多源融合感知</span>
         </div>
 
+        <!-- Initial values are placeholders only: renderSituationalAwareness() fills both the
+             numbers (from /api/baseline-data or the selected scenario) and the delta captions
+             (from the SCENARIOS preset). Duplicating the default figures in the markup meant
+             the same three numbers were maintained in three places and drifted. -->
         <div class="kpi-grid">
           <div class="kpi-card danger">
             <div class="kpi-label">瓶颈段瞬时车速</div>
-            <div class="kpi-value" id="kpiSpeed">8.2 km/h</div>
-            <div class="kpi-delta negative" id="kpiSpeedDelta">▼ -72.6% (严重阻滞)</div>
+            <div class="kpi-value" id="kpiSpeed">—</div>
+            <div class="kpi-delta neutral" id="kpiSpeedDelta">待加载</div>
           </div>
 
           <div class="kpi-card danger">
             <div class="kpi-label">核心路段最大排队</div>
-            <div class="kpi-value" id="kpiQueue">165.0 m</div>
-            <div class="kpi-delta negative" id="kpiQueueDelta">▲ +110m (逼近回溢线)</div>
+            <div class="kpi-value" id="kpiQueue">—</div>
+            <div class="kpi-delta neutral" id="kpiQueueDelta">待加载</div>
           </div>
 
           <div class="kpi-card warn">
             <div class="kpi-label">断面车道占有率</div>
-            <div class="kpi-value" id="kpiOcc">82%</div>
-            <div class="kpi-delta negative" id="kpiOccDelta">▲ 超出容量设计阈值</div>
+            <div class="kpi-value" id="kpiOcc">—</div>
+            <div class="kpi-delta neutral" id="kpiOccDelta">待加载</div>
           </div>
 
           <div class="kpi-card success">
             <div class="kpi-label">平行旁路空闲容量</div>
-            <div class="kpi-value" id="kpiBypass">1,200 veh/h (28%)</div>
-            <div class="kpi-delta positive" id="kpiBypassDelta">● 备用容量充沛，适宜分流</div>
+            <div class="kpi-value" id="kpiBypass">—</div>
+            <div class="kpi-delta neutral" id="kpiBypassDelta">待加载</div>
           </div>
         </div>
       </section>
@@ -247,7 +255,10 @@
               <span class="dot green"></span>
             </div>
             <span class="terminal-title">TrafficDecisionAgent::ChainOfThought::Attribution()</span>
-            <span class="terminal-actions">STATUS: CONVERGED</span>
+            <!-- Driven by the pipeline: IDLE -> RUNNING -> CONVERGED / FAILED.
+                 This used to be the static text "STATUS: CONVERGED", i.e. the UI claimed the
+                 reasoning had converged before anything had even run. -->
+            <span class="terminal-actions" id="cotStatusText" role="status">STATUS: IDLE</span>
           </div>
           <div class="terminal-body" id="cotTerminalBody">
             <!-- Populated by JavaScript -->
@@ -355,6 +366,20 @@
         <!-- Data provenance banner: shown only when the payload is calibrated empirical
              data instead of a live SUMO measurement (see renderExecutionModeNotice) -->
         <div id="executionModeBanner" role="alert"></div>
+
+        <!-- Headline conclusion. The single most important result used to live as an 18px pill
+             among five siblings, while decorative figures rendered at 28px; this card states it
+             once, large. Values are filled by renderHeroConclusion() from the real payload. -->
+        <div class="hero-conclusion" id="heroConclusion">
+          <div>
+            <div class="hero-label">方案 B 平均延误削减</div>
+            <div class="hero-value" id="heroValue">—</div>
+          </div>
+          <div>
+            <div class="hero-headline" id="heroHeadline">尚未运行推演 —— 点击左侧「启动智能体诊断与推演」获取量化结论</div>
+            <div class="hero-sub" id="heroSub">本卡片只展示由工具或仿真实际计算出的数值；无数据时保持空态。</div>
+          </div>
+        </div>
 
         <!-- Metric Delta Row (placeholders only: real values are rendered by dashboard.js
              from the actual rollout response — never pre-filled with showcase numbers) -->
@@ -529,18 +554,30 @@
 
   </div>
  
+  <!-- Long-task progress veil: a SUMO rollout runs for tens of seconds, so show which
+       stage is executing and for how long instead of only a button spinner. -->
+  <div class="task-veil" id="taskVeil" role="status" aria-live="polite">
+    <div class="task-veil-card">
+      <div class="task-veil-title">智能体协同决策流水线执行中</div>
+      <div class="task-veil-step" id="taskVeilStep">准备中…</div>
+      <div class="task-veil-timer" id="taskVeilTimer">0.0s</div>
+      <div class="task-veil-track"><div class="task-veil-fill" id="taskVeilFill"></div></div>
+      <div class="task-veil-note">微观 SUMO 推演通常需要数十秒，请勿关闭页面。</div>
+    </div>
+  </div>
+
   <!-- LLM Switcher Modal (ccSwitch style) -->
   <div class="modal-backdrop" id="llmConfigModal" style="display:none;">
-    <div class="modal-dialog">
+    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="llmModalTitle">
       <div class="modal-header">
         <div style="display:flex;align-items:center;gap:10px;">
-          <span style="font-size:24px;">🤖</span>
+          <span style="font-size:24px;" aria-hidden="true">🤖</span>
           <div>
-            <h3 class="modal-title">大模型端点与自动识别 (LLM Switcher)</h3>
+            <h3 class="modal-title" id="llmModalTitle">大模型端点与自动识别 (LLM Switcher)</h3>
             <p class="modal-subtitle">像 ccSwitch 一样输入 Base URL 与 Key 即可自动探测服务商模型</p>
           </div>
         </div>
-        <button class="modal-close-btn" id="closeLlmModalBtn" title="关闭">&times;</button>
+        <button class="modal-close-btn" id="closeLlmModalBtn" title="关闭" aria-label="关闭模型配置对话框">&times;</button>
       </div>
       <div class="modal-body">
         <div class="form-group">
