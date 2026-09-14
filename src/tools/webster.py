@@ -62,8 +62,20 @@ class WebsterSignalOptimizer:
         # 1. Calculate flow ratio y_i for each phase
         flow_ratios = []
         for q, lanes in zip(phase_flows, phase_lanes):
-            sat_flow = max(1.0, max(1, lanes) * self.s_per_lane)
-            safe_q = max(0.0, float(q))
+            try:
+                q_value = float(q)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"phase flow must be a finite number, got {q!r}") from exc
+            if not math.isfinite(q_value):
+                raise ValueError(f"phase flow must be finite, got {q!r}")
+            try:
+                lane_value = int(lanes)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"lane count must be a positive integer, got {lanes!r}") from exc
+            if lane_value <= 0:
+                raise ValueError(f"lane count must be positive, got {lanes!r}")
+            sat_flow = max(1.0, lane_value * self.s_per_lane)
+            safe_q = max(0.0, q_value)
             y = max(0.01, safe_q / sat_flow)
             flow_ratios.append(y)
 

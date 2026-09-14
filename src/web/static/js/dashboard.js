@@ -144,6 +144,11 @@ const state = {
   reportMarkdown: ''
 };
 
+// All server/model text must be escaped before entering an HTML template.
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+
 // ECharts instances
 let radarChartInstance = null;
 let timeSeriesChartInstance = null;
@@ -152,6 +157,8 @@ let timeSeriesChartInstance = null;
 document.addEventListener('DOMContentLoaded', async () => {
   initTheme();
   bindEventHandlers();
+  const sandboxToggle = document.getElementById('toggleSandbox');
+  if (sandboxToggle) state.runPhysicalSandbox = sandboxToggle.checked;
   await loadInitialData();
   window.addEventListener('resize', handleResize);
 });
@@ -416,9 +423,9 @@ function renderCoTDiagnosis() {
   terminalBody.innerHTML = steps.map(step => {
     const match = step.match(/^(\d+\.\s*【[^】]+】)(.*)$/);
     if (match) {
-      return `<div class="cot-step"><span class="cot-step-tag">${match[1]}</span><span class="cot-step-text">${match[2]}</span></div>`;
+      return `<div class="cot-step"><span class="cot-step-tag">${escapeHtml(match[1])}</span><span class="cot-step-text">${escapeHtml(match[2])}</span></div>`;
     }
-    return `<div class="cot-step"><span class="cot-step-text">${step}</span></div>`;
+    return `<div class="cot-step"><span class="cot-step-text">${escapeHtml(step)}</span></div>`;
   }).join('');
 }
 
@@ -1207,8 +1214,10 @@ function renderRoadNetwork() {
   let renderEdges = edges;
   let renderLive = live;
   if (mapViewState === 'strategy' && data.map_snapshot) {
-    renderEdges = data.map_snapshot.edges || edges;
-    renderLive = data.map_snapshot.live || live;
+    const snapshot = data.map_snapshot.strategy_b || data.map_snapshot.strategy_a;
+    // Snapshots contain per-edge metrics only; geometry remains the network geometry.
+    renderEdges = edges;
+    renderLive = snapshot || live;
   }
 
   // Compute bounds for SVG viewBox
