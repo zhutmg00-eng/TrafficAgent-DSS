@@ -388,10 +388,12 @@ class SumoSimulationSandbox:
         started = False
 
         # Time-series collection
-        time_stamps = []
-        bottleneck_queues = []
-        bottleneck_speeds = []
-        network_delays = []
+            time_stamps = []
+            bottleneck_queues = []
+            bottleneck_speeds = []
+            network_delays = []
+            final_vehicle_losses = {}
+            last_vehicle_losses = {}
         completed_vehicles = 0
         total_co2 = 0.0
         total_fuel = 0.0
@@ -537,11 +539,19 @@ class SumoSimulationSandbox:
                     # definition as SUMO's tripinfo `timeLoss`, which is the metric the
                     # evaluator and the decision brief must report.
                     active_veh_ids = conn.vehicle.getIDList()
+                    active_set = set(active_veh_ids)
+                    # Keep one final cumulative time-loss sample per vehicle. Vehicles
+                    # that disappeared since the previous step are considered complete.
+                    for departed in set(last_vehicle_losses) - active_set:
+                        final_vehicle_losses[departed] = last_vehicle_losses[departed]
+                        last_vehicle_losses.pop(departed, None)
                     if active_veh_ids:
                         losses = []
                         for vid in active_veh_ids:
                             try:
-                                losses.append(conn.vehicle.getTimeLoss(vid))
+                                loss = conn.vehicle.getTimeLoss(vid)
+                                last_vehicle_losses[vid] = loss
+                                losses.append(loss)
                             except Exception:
                                 pass
                         avg_delay = sum(losses) / len(losses) if losses else 0.0
@@ -593,8 +603,8 @@ class SumoSimulationSandbox:
             "queue_lengths": bottleneck_queues,
             "vehicle_speeds": [s / 3.6 for s in bottleneck_speeds],  # in m/s for evaluator
             "bottleneck_speeds_kmh": bottleneck_speeds,
-            "vehicle_delays": network_delays,
-            "delay_metric": "active_vehicle_cumulative_time_loss_sample_mean_s (5s samples; not final per-trip mean)",
+            "vehicle_delays": (list(final_vehicle_losses.values()) + list(last_vehicle_losses.values())),
+            "delay_metric": "mean_final_vehicle_time_loss_s_per_veh (completed vehicles plus final in-network samples)",
             "completed_trips": completed_vehicles,
             "total_co2_mg": total_co2,
             "total_fuel_mg": total_fuel,
