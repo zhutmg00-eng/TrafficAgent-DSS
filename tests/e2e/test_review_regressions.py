@@ -27,6 +27,7 @@ def test_report_markup_is_inert(page, base_url):
 
 def test_negative_improvement_is_displayed_as_increase(page, base_url):
     page.goto(base_url)
+    page.wait_for_timeout(1000)
     page.evaluate('''() => {
       state.rollout = {execution_mode: 'mesoscopic_network'};
       renderHeroConclusion({delay_improvement_pct: -12}, {avg_delay_s: 42});
