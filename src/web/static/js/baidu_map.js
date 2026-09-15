@@ -33,11 +33,14 @@
     if (typeof window.showToast === 'function') window.showToast(msg, type || 'info');
   }
 
-  function setStatusBadge(text, color) {
+  // Status colour goes through CSS custom properties, not literal hex. The literals here used
+  // to be the *dark* steps (#f87171 / #34d399 / #fbbf24); in light mode those are pale tints
+  // on a near-white header, so "LBS: 未配置" measured 2.52:1. Tokens resolve per theme.
+  function setStatusBadge(text, token) {
     const badge = el('baiduMapStatusBadge');
     if (badge) {
       badge.textContent = text;
-      badge.style.color = color || 'var(--text-muted)';
+      badge.style.color = token || 'var(--text-muted)';
     }
   }
 
@@ -52,7 +55,7 @@
         '在 <a href="https://lbs.baidu.com" target="_blank" rel="noopener">百度地图开放平台</a> 创建「浏览器端」应用后填入 <code>BAIDU_MAP_AK</code>。</div>' +
         '</div>';
     }
-    setStatusBadge('LBS: 未配置', '#f87171');
+    setStatusBadge('LBS: 未配置', 'var(--state-bad-text)');
     const btn = el('baiduRouteCompareBtn');
     if (btn) btn.disabled = true;
   }
@@ -111,7 +114,7 @@
       state.overlays.push(marker, label);
     });
 
-    setStatusBadge('LBS: 已接入 (JS API GL · 实时路况)', '#34d399');
+    setStatusBadge('LBS: 已接入 (JS API GL · 实时路况)', 'var(--state-ok-text)');
   }
 
   function addTrafficLayer() {
@@ -202,7 +205,7 @@
       }
       state.ak = data.ak;
       state.center = data.center || state.center;
-      setStatusBadge('LBS: 加载中…', '#fbbf24');
+      setStatusBadge('LBS: 加载中…', 'var(--state-warn-text)');
       await loadBMapGL(state.ak);
       setupMap();
     } catch (err) {
