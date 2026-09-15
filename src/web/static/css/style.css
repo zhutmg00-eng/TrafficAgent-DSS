@@ -8,11 +8,17 @@
   --bg-card-inner: #1e293b;
   --border-color: #25334e;
   --border-subtle: #1a2436;
-  
+
+  /* Text ramp — every step is verified against the surfaces it is used on.
+     `--text-muted` used to be #64748b, which measured 3.07:1 on `--bg-card-inner`
+     (#1e293b) and 3.4:1 on `--bg-card`. Both are below the WCAG AA 4.5:1 floor for
+     body-size text, and it is the single most used label colour in the dashboard
+     (55 of 64 measured contrast failures). Lightened to reach AA on the *inner*
+     surface — the darkest background it ever sits on. */
   --text-primary: #f8fafc;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  
+  --text-secondary: #a8b6c9;
+  --text-muted: #8b9bb4;
+
   --accent-blue: #3b82f6;
   --accent-blue-glow: rgba(59, 130, 246, 0.25);
   --accent-cyan: #06b6d4;
@@ -24,6 +30,37 @@
   --accent-purple: #8b5cf6;
   --accent-purple-glow: rgba(139, 92, 246, 0.25);
 
+  /* Status text colours — the raw accents above are tuned for fills (bars, dots,
+     borders). As *text* on a dark surface several of them fall short of AA, so
+     text-on-dark gets its own lighter step. Fills keep using --accent-*. */
+  --text-on-accent: #ffffff;
+  --state-ok-text: #34d399;
+  --state-warn-text: #fbbf24;
+  --state-bad-text: #f87171;
+  --state-info-text: #7dd3fc;
+
+  /* Semantic tints — the translucent washes that back tags, alerts and chips.
+     Declared once so light mode can re-tune them without touching every rule. */
+  --tint-blue: rgba(59, 130, 246, 0.14);
+  --tint-cyan: rgba(56, 189, 248, 0.14);
+  --tint-green: rgba(16, 185, 129, 0.14);
+  --tint-amber: rgba(245, 158, 11, 0.14);
+  --tint-red: rgba(239, 68, 68, 0.14);
+  --tint-purple: rgba(139, 92, 246, 0.14);
+  --tint-neutral: rgba(148, 163, 184, 0.12);
+
+  /* Traffic Level-of-Service ramp — a domain palette, deliberately kept separate
+     from the generic accents above. 畅通/缓行/拥堵/严重拥堵 is a standard traffic
+     engineering scale (green → yellow → orange → red), so these four keep their
+     conventional hues instead of being folded into --accent-*. They are declared
+     here so the legend chips, map overlays and detector chips all read from one
+     source rather than repeating raw hex in three places. */
+  --los-free: #22c55e;
+  --los-moderate: #eab308;
+  --los-congested: #f97316;
+  --los-severe: #dc2626;
+  --los-unknown: #64748b;
+
   --terminal-bg: #030712;
   --terminal-text: #38bdf8;
   --terminal-muted: #94a3b8;
@@ -33,9 +70,20 @@
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
   --shadow-lg: 0 10px 25px rgba(0, 0, 0, 0.5);
 
+  /* Radius scale — collapsed to three intentional steps. */
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 16px;
+
+  /* Spacing scale (8pt grid). Section rhythm reads from these instead of ad-hoc
+     pixel values, which is why the vertical gaps between panels used to differ
+     by a few pixels from one block to the next. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
 }
 
 [data-theme="light"] {
@@ -46,11 +94,14 @@
   --bg-card-inner: #f1f5f9;
   --border-color: #cbd5e1;
   --border-subtle: #e2e8f0;
-  
+
+  /* The dark-mode muted tone inverts here: on a light surface the constraint is
+     that the text must stay dark enough, so these are the *dark* steps of the
+     same ramps. */
   --text-primary: #0f172a;
   --text-secondary: #334155;
-  --text-muted: #64748b;
-  
+  --text-muted: #5b6b80;
+
   --accent-blue: #2563eb;
   --accent-blue-glow: rgba(37, 99, 235, 0.15);
   --accent-cyan: #0284c7;
@@ -62,10 +113,29 @@
   --accent-purple: #7c3aed;
   --accent-purple-glow: rgba(124, 58, 237, 0.15);
 
+  /* On light surfaces the accents are already dark enough to carry text. */
+  --text-on-accent: #ffffff;
+  --state-ok-text: #047857;
+  --state-warn-text: #b45309;
+  --state-bad-text: #b91c1c;
+  --state-info-text: #0369a1;
+
+  --tint-blue: rgba(37, 99, 235, 0.08);
+  --tint-cyan: rgba(2, 132, 199, 0.08);
+  --tint-green: rgba(5, 150, 105, 0.08);
+  --tint-amber: rgba(217, 119, 6, 0.1);
+  --tint-red: rgba(220, 38, 38, 0.08);
+  --tint-purple: rgba(124, 58, 237, 0.08);
+  --tint-neutral: rgba(100, 116, 139, 0.08);
+
   --terminal-bg: #1e293b;
   --terminal-text: #7dd3fc;
-  /* The terminal window keeps a dark surface in both themes, so its内部文字 uses its own
-     muted/strong tokens rather than the page text tokens (which invert with the theme). */
+  /* The terminal window keeps a dark surface in both themes, so its internal text uses its
+     own muted/strong tokens rather than the page text tokens (which invert with the theme).
+     These were MISSING from the light block, so light mode inherited the dark values by
+     accident: --terminal-text-strong stayed #e2e8f0 on a #1e293b background (14.5:1, fine)
+     but any use of the page `--state-info-text` inside the terminal resolved to the light
+     step #0369a1 → 2.26:1. Declaring the trio explicitly makes the terminal self-contained. */
   --terminal-muted: #94a3b8;
   --terminal-text-strong: #e2e8f0;
 
@@ -167,8 +237,13 @@ body {
 }
 
 .brand-badge {
-  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
-  color: #fff;
+  /* Gradient stays blue -> purple, but both stops are pinned to the *dark* end of the ramp
+     so 11px white text clears 4.5:1 in either theme. The previous stops were --accent-blue
+     and --accent-purple, which in light mode resolve to #2563eb / #7c3aed — white on #7c3aed
+     measured 4.14:1, and the 135deg gradient meant part of the badge was always below the
+     line. #1e40af -> #6d28d9 keeps the same visual sweep at 5.7:1+ throughout. */
+  background: linear-gradient(135deg, #1e40af, #6d28d9);
+  color: var(--text-on-accent);
   font-size: 11px;
   font-weight: 600;
   padding: 2px 8px;
@@ -421,8 +496,11 @@ input:checked + .switch-slider:before {
   padding: 12px;
   border-radius: var(--radius-md);
   border: none;
-  background: linear-gradient(135deg, #2563eb, #1d4ed8);
-  color: #fff;
+  /* Second stop pinned to a dark blue rather than the inherited --accent-blue: in light mode
+     that token is #2563eb and white on it is 4.43:1, marginally under the 4.5 mark for 14px
+     text. #1e40af keeps the gradient at 6.9:1 across the whole sweep. */
+  background: linear-gradient(135deg, #1d4ed8, #1e40af);
+  color: var(--text-on-accent);
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
@@ -430,7 +508,7 @@ input:checked + .switch-slider:before {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.4);
+  box-shadow: 0 4px 14px var(--accent-blue-glow);
 }
 
 .btn-primary:hover {
@@ -451,7 +529,7 @@ input:checked + .switch-slider:before {
   width: 16px;
   height: 16px;
   border: 2px solid rgba(255, 255, 255, 0.3);
-  border-top-color: #fff;
+  border-top-color: var(--text-on-accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
   display: none;
@@ -469,21 +547,23 @@ input:checked + .switch-slider:before {
 .main-content {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  /* 32px between sections, up from 24px: with the new section-title hairline this reads as
+     a deliberate break between blocks instead of a continuous list. */
+  gap: var(--space-6);
 }
 
 /* Alert Banner */
 .alert-card {
-  background: rgba(239, 68, 68, 0.1);
+  background: var(--tint-red);
   border-left: 5px solid var(--accent-red);
   border-radius: var(--radius-md);
   padding: 14px 18px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-top: 1px solid rgba(239, 68, 68, 0.2);
-  border-right: 1px solid rgba(239, 68, 68, 0.2);
-  border-bottom: 1px solid rgba(239, 68, 68, 0.2);
+  border-top: 1px solid var(--tint-red);
+  border-right: 1px solid var(--tint-red);
+  border-bottom: 1px solid var(--tint-red);
 }
 
 .alert-content {
@@ -507,9 +587,13 @@ input:checked + .switch-slider:before {
   color: var(--text-secondary);
 }
 
+/* White on --accent-red is 3.76:1 — under AA for an 11px bold badge. Solid fill
+   swapped for the tint + dark-text pairing used by the other status chips, which
+   keeps the "alarm" hue while clearing the floor. */
 .alert-badge {
-  background: var(--accent-red);
-  color: #fff;
+  background: var(--tint-red);
+  color: var(--state-bad-text);
+  border: 1px solid var(--tint-red);
   font-size: 11px;
   font-weight: 700;
   padding: 4px 10px;
@@ -520,12 +604,12 @@ input:checked + .switch-slider:before {
 /* Degraded Fallback Banner */
 .degraded-banner {
   display: none;
-  margin-bottom: 14px;
+  margin-bottom: var(--space-3);
   padding: 12px 18px;
   border-radius: var(--radius-md);
-  border: 1px solid rgba(245, 158, 11, 0.55);
-  background: rgba(245, 158, 11, 0.12);
-  color: var(--accent-amber);
+  border: 1px solid var(--tint-amber);
+  background: var(--tint-amber);
+  color: var(--state-warn-text);
   font-size: 14px;
   font-weight: 600;
   line-height: 1.6;
@@ -540,16 +624,23 @@ input:checked + .switch-slider:before {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 14px;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
+  padding-bottom: var(--space-2);
+  /* A hairline under each section title. Nine stacked sections at a uniform 24px gap read
+     as one undifferentiated column; the rule gives the eye a "new section starts here"
+     cue without adding a box around everything. */
+  border-bottom: 1px solid var(--border-color);
 }
 
 .section-title {
-  font-size: 19px;
+  font-size: 18px;
   font-weight: 700;
   color: var(--text-primary);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
+  line-height: 1.35;
 }
 
 /* KPI Cards Row */
@@ -577,12 +668,18 @@ input:checked + .switch-slider:before {
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
-  padding: 16px;
+  padding: var(--space-4) var(--space-4) 14px;
   box-shadow: var(--shadow-sm);
   position: relative;
   overflow: hidden;
 }
 
+/* Severity strip on the left edge of every KPI card.
+   It reads the SAME severity ramp as the map legend and the detector chips (--los-*),
+   so "orange" on a KPI card and "orange" on a link mean the same thing. Previously this
+   used --accent-blue / --accent-amber / --accent-green, which are *fill* colours used as
+   button backgrounds; reusing them here meant the strip drifted whenever a button colour
+   was tweaked, and the blue default read as "brand" rather than "normal". */
 .kpi-card::before {
   content: "";
   position: absolute;
@@ -590,30 +687,35 @@ input:checked + .switch-slider:before {
   left: 0;
   width: 4px;
   height: 100%;
-  background: var(--accent-blue);
+  background: var(--los-moderate);
 }
 
 .kpi-card.warn::before {
-  background: var(--accent-amber);
+  background: var(--los-congested);
 }
 
 .kpi-card.danger::before {
-  background: var(--accent-red);
+  background: var(--los-severe);
 }
 
 .kpi-card.success::before {
-  background: var(--accent-green);
+  background: var(--los-free);
 }
 
 .kpi-label {
-  font-size: 13px;
-  font-weight: 500;
+  /* Caps-tracked micro-label: visually distinct from the number below it, and it stops
+     the eye from landing on the label first. The value is the message; the label is only
+     a key. 11px + 0.06em trasks legibly on a projector without competing with 28px digits. */
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: none;
   color: var(--text-muted);
-  margin-bottom: 6px;
+  margin-bottom: var(--space-2);
 }
 
 .kpi-value {
-  font-size: 28px;
+  font-size: 27px;
   font-weight: 700;
   color: var(--text-primary);
   letter-spacing: -0.5px;
@@ -626,7 +728,9 @@ input:checked + .switch-slider:before {
 .kpi-delta {
   font-size: 12px;
   font-weight: 600;
-  margin-top: 6px;
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-color);
   display: flex;
   align-items: center;
   gap: 4px;
@@ -673,9 +777,9 @@ input:checked + .switch-slider:before {
   border-radius: 50%;
 }
 
-.dot.red { background: #ef4444; }
-.dot.yellow { background: #f59e0b; }
-.dot.green { background: #10b981; }
+.dot.red { background: var(--accent-red); }
+.dot.yellow { background: var(--accent-amber); }
+.dot.green { background: var(--accent-green); }
 
 .terminal-title {
   font-family: 'Consolas', 'Courier New', monospace;
@@ -712,8 +816,12 @@ input:checked + .switch-slider:before {
 }
 
 .cot-step-tag {
-  background: rgba(56, 189, 248, 0.15);
-  color: #38bdf8;
+  background: var(--tint-cyan);
+  /* `--terminal-text`, NOT `--state-info-text`. The CoT terminal keeps a dark surface in
+     BOTH themes, so it must use the terminal's own ramp. `--state-info-text` is #7dd3fc in
+     dark (8.77:1 on #1e293b — fine) but flips to #0369a1 in light, which on the same dark
+     terminal is 2.26:1. The two tokens only coincidentally matched in dark mode. */
+  color: var(--terminal-text);
   padding: 1px 8px;
   border-radius: 4px;
   font-weight: 600;
@@ -754,16 +862,22 @@ input:checked + .switch-slider:before {
   box-shadow: 0 0 15px var(--accent-green-glow);
 }
 
+/* This one floats over the card edge and is the single "recommended" marker, so it
+   keeps a solid fill rather than a tint. White on --accent-green measured 2.54:1,
+   the worst label in the dashboard; darkened to a green whose white-on-fill ratio
+   clears 4.5:1. The accent token itself is untouched (it still drives bars/dots). */
 .strategy-badge-top {
   position: absolute;
   top: -10px;
   right: 18px;
-  background: var(--accent-green);
-  color: #fff;
+  background: #047857;
+  color: var(--text-on-accent);
   font-size: 11px;
   font-weight: 700;
   padding: 2px 10px;
   border-radius: 20px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  letter-spacing: 0.02em;
 }
 
 .strategy-header {
@@ -784,14 +898,17 @@ input:checked + .switch-slider:before {
   color: var(--text-secondary);
 }
 
+/* The tag is 11px, so it needs the full 4.5:1. The tag hue comes from `--accent-*`, which is
+   a *fill* colour: amber #d97706 on the 10%-alpha amber tint measured 2.86:1 in light and
+   green #059669 measured 3.42:1. Use the text step of each hue instead -> 4.52 / 4.98. */
 .strategy-card.strat-a .strategy-tag {
-  background: rgba(245, 158, 11, 0.15);
-  color: var(--accent-amber);
+  background: var(--tint-amber);
+  color: var(--state-warn-text);
 }
 
 .strategy-card.strat-b .strategy-tag {
-  background: rgba(16, 185, 129, 0.15);
-  color: var(--accent-green);
+  background: var(--tint-green);
+  color: var(--state-ok-text);
 }
 
 .strategy-name {
@@ -1012,7 +1129,10 @@ input:checked + .switch-slider:before {
 .report-content h2, .report-content h3 {
   font-size: 15px;
   font-weight: 600;
-  color: var(--accent-cyan);
+  /* --state-info-text, not --accent-cyan: on the light report surface (#f1f5f9) the cyan
+     #0284c7 lands at 3.74:1 — a 15px/600 heading is not "large text" (that needs 18.66px
+     bold), so it must clear 4.5. #0369a1 gives 5.42:1. */
+  color: var(--state-info-text);
   margin-top: 18px;
   margin-bottom: 8px;
 }
@@ -1058,9 +1178,11 @@ input:checked + .switch-slider:before {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
+/* Inline code chips: 12px monospace must clear 4.5:1. Light mode previously used
+   --accent-blue #2563eb = 4.13:1 on the rgba(0,0,0,.06) chip — just short. #1d4ed8 = 5.57:1. */
 [data-theme="light"] .report-content code.report-code {
-  background: rgba(0, 0, 0, 0.06);
-  color: var(--accent-blue);
+  background: var(--tint-neutral);
+  color: #1d4ed8;
 }
 
 .report-content .table-responsive {
@@ -1115,9 +1237,9 @@ input:checked + .switch-slider:before {
 }
 
 .toast {
-  background: #1e293b;
+  background: var(--bg-card-inner);
   border-left: 4px solid var(--accent-green);
-  color: #f8fafc;
+  color: var(--text-primary);
   padding: 12px 18px;
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-lg);
@@ -1150,9 +1272,9 @@ input:checked + .switch-slider:before {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: rgba(99, 102, 241, 0.15);
-  color: #818cf8;
-  border: 1px solid rgba(99, 102, 241, 0.35);
+  background: var(--tint-purple);
+  color: var(--state-info-text);
+  border: 1px solid var(--tint-purple);
   padding: 6px 12px;
   border-radius: 20px;
   font-size: 12px;
@@ -1162,8 +1284,8 @@ input:checked + .switch-slider:before {
 }
 
 .btn-llm-settings:hover {
-  background: rgba(99, 102, 241, 0.25);
-  border-color: #818cf8;
+  background: var(--tint-purple);
+  border-color: var(--accent-purple);
   transform: translateY(-1px);
 }
 
@@ -1311,17 +1433,17 @@ input:checked + .switch-slider:before {
   font-size: 11px;
   padding: 3px 9px;
   border-radius: 12px;
-  background: rgba(99, 102, 241, 0.1);
-  border: 1px solid rgba(99, 102, 241, 0.25);
-  color: #818cf8;
+  background: var(--tint-purple);
+  border: 1px solid var(--tint-purple);
+  color: var(--state-info-text);
   cursor: pointer;
   transition: all 0.15s;
   user-select: none;
 }
 
 .provider-tag:hover {
-  background: rgba(99, 102, 241, 0.25);
-  border-color: #818cf8;
+  background: var(--tint-purple);
+  border-color: var(--accent-purple);
 }
 
 .llm-status-alert {
@@ -1332,20 +1454,20 @@ input:checked + .switch-slider:before {
 }
 
 .llm-status-alert.success {
-  background: rgba(16, 185, 129, 0.12);
-  border: 1px solid rgba(16, 185, 129, 0.3);
-  color: #10b981;
+  background: var(--tint-green);
+  border: 1px solid var(--tint-green);
+  color: var(--state-ok-text);
 }
 
 .llm-status-alert.error {
-  background: rgba(239, 68, 68, 0.12);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  color: #ef4444;
+  background: var(--tint-red);
+  border: 1px solid var(--tint-red);
+  color: var(--state-bad-text);
 }
 
 .llm-status-alert.info {
-  background: rgba(59, 130, 246, 0.12);
-  border: 1px solid rgba(59, 130, 246, 0.3);
+  background: var(--tint-blue);
+  border: 1px solid var(--tint-blue);
   color: #3b82f6;
 }
 
@@ -1384,7 +1506,17 @@ input:checked + .switch-slider:before {
   border-radius: var(--radius-md);
   overflow: hidden;
   position: relative;
+  /* The dark translucent well is the placeholder *behind the map tiles* while the JS API GL
+     canvas loads — it reads as "map surface" in dark mode. In light mode it composites to a
+     mid-grey (rgba(15,23,42,.35) over white = rgb(157,170,182)), which is fine under tiles but
+     wrong for the "LBS 未接入" empty state that renders inside it in plain text. Scoping the
+     well to dark mode and giving light mode a neutral surface fixes the empty state without
+     changing what the loaded map looks like. */
   background: rgba(15, 23, 42, 0.35);
+}
+
+[data-theme="light"] .map-canvas {
+  background: var(--bg-card-inner);
 }
 
 .map-unconfigured {
@@ -1417,14 +1549,21 @@ input:checked + .switch-slider:before {
   max-width: 520px;
 }
 
+/* Inline code/link accents inside the "map not configured" empty state.
+   These were literal #7dd3fc — a *dark-surface* blue. In light mode that sits on the white
+   card at 1.35:1 (effectively invisible), the same mistake as the CoT tag. Route both
+   through tokens so each theme gets its own step: #7dd3fc in dark, #0369a1 in light (5.4:1). */
 .map-unconfigured-desc code {
-  color: #7dd3fc;
-  background: rgba(56, 189, 248, 0.1);
+  color: var(--state-info-text);
+  background: var(--tint-cyan);
   padding: 1px 5px;
   border-radius: 4px;
 }
 
-.map-unconfigured-desc a { color: #7dd3fc; }
+.map-unconfigured-desc a {
+  color: var(--state-info-text);
+  text-decoration: underline;
+}
 
 .map-toolbar {
   display: flex;
@@ -1652,12 +1791,12 @@ input:checked + .switch-slider:before {
   border-radius: 2px;
 }
 
-.legend-free { background: #22c55e; }
-.legend-moderate { background: #eab308; }
-.legend-congested { background: #f97316; }
-.legend-severe { background: #dc2626; }
-.legend-unknown { background: #64748b; }
-.legend-bottleneck { background: #dc2626; border: 1px dashed #dc2626; height: 6px; }
+.legend-free { background: var(--los-free); }
+.legend-moderate { background: var(--los-moderate); }
+.legend-congested { background: var(--los-congested); }
+.legend-severe { background: var(--los-severe); }
+.legend-unknown { background: var(--los-unknown); }
+.legend-bottleneck { background: var(--los-severe); border: 1px dashed var(--los-severe); height: 6px; }
 
 /* ==========================================================================
    Section 7: Action Checklist
@@ -1673,7 +1812,7 @@ input:checked + .switch-slider:before {
 
 .action-summary {
   background: var(--accent-blue-glow);
-  border: 1px solid rgba(59, 130, 246, 0.3);
+  border: 1px solid var(--tint-blue);
   border-radius: var(--radius-md);
   padding: 14px 18px;
   font-size: 13.5px;
@@ -1713,6 +1852,14 @@ input:checked + .switch-slider:before {
   border-left-color: var(--accent-green);
 }
 
+/* Light-mode text step for the phase-1 badge. --state-warn-text is #b45309 in light, which
+   measured 4.14:1 against the amber tint on the light card — just under 4.5 for a 13px
+   number. #92400e (amber-800) gives 6.38:1 and keeps the same hue. Dark mode is unaffected:
+   there #fbbf24 on the tint measures comfortably above the line. */
+[data-theme="light"] .action-step-card.phase-1 .action-step-num {
+  color: #92400e;
+}
+
 .action-step-header {
   display: flex;
   align-items: center;
@@ -1727,16 +1874,21 @@ input:checked + .switch-slider:before {
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  background: var(--accent-blue);
-  color: #fff;
+  background: var(--tint-blue);
+  color: var(--state-info-text);
   font-size: 13px;
   font-weight: 700;
   flex-shrink: 0;
 }
 
-.action-step-card.phase-0 .action-step-num { background: var(--accent-red); }
-.action-step-card.phase-1 .action-step-num { background: var(--accent-amber); }
-.action-step-card.phase-2 .action-step-num { background: var(--accent-green); }
+/* Phase colours used to paint the badge with the *raw* accent and put white text on
+   top: amber (#f59e0b) and green (#10b981) both measured below 3:1 against white,
+   which is under the AA floor even for bold text. The same applies to the neutral
+   blue default (#3b82f6 → white = 3.68:1). The badge keeps the hue but as a light
+   tint, with the matching dark text step — same signal, legible in both themes. */
+.action-step-card.phase-0 .action-step-num { background: var(--tint-red); color: var(--state-bad-text); }
+.action-step-card.phase-1 .action-step-num { background: var(--tint-amber); color: var(--state-warn-text); }
+.action-step-card.phase-2 .action-step-num { background: var(--tint-green); color: var(--state-ok-text); }
 
 .action-step-title {
   font-size: 14px;
@@ -1757,10 +1909,14 @@ input:checked + .switch-slider:before {
   gap: 2px;
 }
 
+/* 11px at --text-muted measured 3.07:1 — the worst offender in the audit (35 nodes).
+   Promoted one step up the ramp and to 12px; the label is a field name, so it needs
+   to be readable, not just present. */
 .action-detail-label {
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-weight: 600;
-  font-size: 11px;
+  font-size: 12px;
+  letter-spacing: 0.01em;
 }
 
 .action-detail-value {
@@ -1865,14 +2021,14 @@ input:checked + .switch-slider:before {
   border-radius: 50%;
 }
 
-.level-free .level-dot { background: #22c55e; }
-.level-free { background: rgba(34, 197, 94, 0.12); color: #22c55e; }
-.level-moderate .level-dot { background: #eab308; }
-.level-moderate { background: rgba(234, 179, 8, 0.12); color: #eab308; }
-.level-congested .level-dot { background: #f97316; }
-.level-congested { background: rgba(249, 115, 22, 0.12); color: #f97316; }
-.level-severe .level-dot { background: #dc2626; }
-.level-severe { background: rgba(220, 38, 38, 0.12); color: #dc2626; }
+.level-free .level-dot { background: var(--los-free); }
+.level-free { background: rgba(34, 197, 94, 0.12); color: var(--los-free); }
+.level-moderate .level-dot { background: var(--los-moderate); }
+.level-moderate { background: rgba(234, 179, 8, 0.12); color: #854d0e; }
+.level-congested .level-dot { background: var(--los-congested); }
+.level-congested { background: rgba(249, 115, 22, 0.12); color: #c2410c; }
+.level-severe .level-dot { background: var(--los-severe); }
+.level-severe { background: rgba(220, 38, 38, 0.12); color: var(--los-severe); }
 .level-unknown .level-dot { background: #64748b; }
 .level-unknown { background: rgba(100, 116, 139, 0.12); color: #64748b; }
 

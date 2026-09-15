@@ -1,5 +1,160 @@
 # 更新日志 (Changelog)
 
+## [2026-09-15] UI 可读性与信息层级整改（纯 CSS，无功能变更）
+
+**主题**：把前端从"能看"提到"经得起投影和评审"。所有改动集中在 `src/web/static/css/style.css`
+一个文件，**不动 HTML 结构、不动 JS 逻辑、不加任何前端框架**，因此不影响任何接口契约与测试语义。
+
+**影响文件**：`src/web/static/css/style.css`、`src/web/static/js/baidu_map.js`、`src/web/static/index.html`
+**行为变更**：无（视觉层调整）。唯一的语义变化是 KPI 卡片左侧色条改用拥堵等级色带，详见第三节。
+
+---
+
+### 一、为什么改：不是审美问题，是实测不达标
+
+用 Playwright 把页面真实渲染出来，逐元素量算 **WCAG 对比度**（沿祖先链把半透明背景做 alpha 合成，
+而不是只看第一个非 transparent 的 `background-color`），**实测两个主题都不合格**：
+
+| 问题簇 | 数量 | 根因 |
+|---|---|---|
+| `.action-detail-label` | 35 | `--text-muted`(#64748b) 落在内层卡片 `--bg-card-inner`(#1e293b) 上 = **3.07:1**（AA 需 4.5） |
+| 裸 `<span>` 文本 | 9 | 同上，继承 muted |
+| `.spec-name` | 9 | 同上 |
+| `.action-step-num` | 7 | **白字打在实心状态色底上**：琥珀 #f59e0b 2.15:1、绿 #10b981 2.54:1、蓝 #3b82f6 3.68:1 |
+| 其余单点 | 4 | `.strategy-badge-top`(2.54) / `.alert-badge` / `.cot-step-tag` / `.degraded-banner` |
+| **浅色主题另有** | **23** | 见下节，多数是**只在浅色下才暴露**的同类缺陷 |
+
+> **关键点**：这不是"颜色不好看"，是**数字上不合格**。深色 64 处里 53 处的根因是同一个 token
+> （`--text-muted`），所以修法不是逐个 patch，而是**先把 token 层建起来**。
+
+**浅色主题的 23 处不是"深色问题的浅色副本"，而是三类各自独立的缺陷：**
+
+1. **终端类 token 在浅色下没有覆写**（5 处 + 3 处）
+   `--terminal-*` 三个变量只定义在 `:root`（深色）里，`[data-theme="light"]` 完全没有声明。
+   于是浅色模式下终端仍是深底（正确），但**任何在终端里引用页面级 `--state-info-text` 的地方
+   会解析成浅色步进 `#0369a1`**，打在深底上只有 **2.26:1**。
+   `.cot-step-tag` 与 `.map-unconfigured-desc code` 都是这个根因——两个 token 在深色下数值
+   恰好接近，所以深色测不出来，一换浅色就塌。
+
+2. **渐变上的白字**（2 处）
+   `.brand-badge` / `.btn-primary` 的渐变某一段在浅色下偏亮（`#7c3aed` / `#2563eb`），
+   白字实测 4.14 / 4.43:1 —— 差一点点，但确实是差。
+
+3. **空态文字坐在深色半透明凹槽上**（3 处，**本轮最有价值的发现**）
+   `.map-canvas` 有 `background: rgba(15,23,42,0.35)`。深色模式下这是"地图底"，没问题；
+   但浅色模式下它与白卡片合成出 **rgb(157,170,182)** 的中灰，而 `LBS 未接入` 空态正好渲染在
+   这个凹槽里，深蓝字打在中灰上只有 **2.5:1**。
+   **这个缺陷靠读代码几乎发现不了**——必须把祖先链的 alpha 一层层合成出来才看得见。
+
+### 二、改了什么
+
+**1) 重建设计 token 层**（`:root` 与 `[data-theme="light"]` 双份，29 → 约 55 个）
+
+- 文本三档：`--text-primary/secondary/muted`。深色 `--text-muted` 由 `#64748b` 提到 `#8b9bb4`
+  （实测 3.07 → **5.19/6.33/6.89**，三层背景全过）；浅色 `#5b6b80`（实测 4.97）。
+- 新增 `--state-*-text`（`ok/warn/bad/info`）：**装文字的色**与**做底色的色**分开。
+  过去用 `--accent-*` 同时干这两件事，而它们是为填充调过的，装文字就偏暗/偏亮。
+- 新增 `--tint-*`（6 色，深色 α≈0.14 / 浅色 α≈0.08–0.1）：半透明语义底色，深浅主题各一套。
+- 新增 `--space-1..6`（4/8/12/16/24/32）：把散落的 6/10/14/18/24/28px 收敛到标尺上。
+- **新增 `--los-*`**：畅通绿 / 缓行黄 / 拥堵橙 / 严重拥堵红 / 未知灰。
+- **浅色块补上 `--terminal-*` 三件套**，让终端在两种主题下都自洽（第一节缺陷 1 的根治）。
+
+**2) 修 64 + 23 处不达标**
+
+- `.action-detail-label` 35 处：`--text-muted` → `--text-secondary`，11px → 12px，加 `font-weight:600`
+- `.action-step-num`：由「实心色底 + 白字」改为「**淡色底 + 深色字**」——
+  相位色相保留（红/琥珀/绿），对比度从 2.15–3.68 提到 **4.67–6.89**；
+  默认态（步骤 4–7）同样改掉，这是首轮漏掉、第二轮审计才暴露的一簇
+- `.strategy-badge-top`：改实心 `#047857` + 白字 + 微阴影（2.54 → 5.2+）
+- `.alert-badge` / `.degraded-banner`：统一走 tint 底 + `--state-*-text`
+- `.cot-step-tag`：改用 `--terminal-text`（深浅两主题都对，8.77:1）
+- `.strategy-tag`（浅色）：`--accent-*` → `--state-*-text`（2.86/3.42 → 4.52/4.98）
+- `.report-content h2/h3`：`--accent-cyan` → `--state-info-text`（3.74 → 5.42）
+- `.report-content code.report-code`（浅色）：`--accent-blue` → `#1d4ed8`（4.13 → 5.57）
+- `.brand-badge` / `.btn-primary`：渐变两端钉到各色阶的深端（4.14/4.43 → 7.1+/6.7+）
+- `.action-step-num.phase-1`（浅色）：新增 `#92400e` 覆写（4.14 → 6.38）
+- `.map-unconfigured-desc code` / `a`：字面量 `#7dd3fc` → `--state-info-text`（1.35 → 5.37）
+- `.map-canvas`：**深色半透明凹槽只在深色主题保留**；浅色改用 `--bg-card-inner`（2.5 → 4.97）
+- `baidu_map.js` 的三处徽章颜色由字面量 `#f87171/#34d399/#fbbf24` 改为 `var(--state-*-text)`
+  （浅色下 `LBS: 未配置` 原先 2.52:1，现已随主题翻转）
+- `index.html` 的 `LLM Reasoning Layer` 标签由 `--accent-cyan` 改 `--state-info-text`
+- 另有约 28 处硬编码色（brand-badge、spinner、dot.*、toast、provider-tag 等）收进 token
+
+**3) KPI 卡片色条的语义修正（唯一的行为语义变化）**
+
+四张 KPI 卡的左侧 4px 色条原来是 `--accent-blue/amber/green` —— 这些是**按钮填充色**，被借来当
+"严重度"用，于是蓝色那条读起来像"品牌色"而不是"正常态"，且改按钮色会**连带改坏**这张卡的语义。
+现改为走 `--los-*`，与地图图例、检测器等级 chip **共用同一条色带**：橙 = 拥堵，无论出现在哪里。
+
+**4) 信息层级与视觉节奏**
+
+- `.section-header` 加**细分隔线** + 收紧内距。9 个 section 原先一律 24px 间距、无任何分节信号，
+  视觉上糊成一条长列；现在有了"新段落开始"的锚点
+- `.main-content` 间距 24px → 32px，与上一条配合形成**分组感**
+- `.kpi-label` 改 11px/字重 600/字距 0.06em：标签是"键"、数字是"内容"，
+  原先 13px/500 的标签几乎和数字抢视线
+- `.kpi-value` 28px → 27px（配合上一条，让数字仍是最大的那一个）
+- `.kpi-delta` 加**上分隔线**：变化说明与数值不再糊在一起
+
+### 三、怎么验证
+
+**对比度（自动化，非目测）**
+
+```
+python _ui_audit2.py <port> <tag> dark    → real_contrast=0 overflow=0 clipped=0
+python _ui_audit2.py <port> <tag> light   → real_contrast=0 overflow=0 clipped=0
+```
+
+深色 **64 → 0**，浅色 **23 → 0**。审计脚本对每个文本叶子沿祖先链做 alpha 合成后计算真实对比度，
+并按 WCAG 判定阈值（正文 4.5 / 大号 3.0）。**每条新颜色都在用之前先算过比值**，不是先改后验。
+
+**回归测试**
+
+```
+pytest -q                     → 177 passed, 17 deselected, 66 subtests passed
+pytest tests/e2e -m e2e       → 17 passed（逐条见 _e2e_out.txt）
+```
+
+E2E 17 项全绿，其中直接覆盖本轮改动面的有：`test_theme_toggle_interaction`（主题切换）、
+`test_baidu_map_section_structure` + `test_map_contains_drawable_polylines`（`baidu_map.js` 改动未破坏地图）、
+`test_action_playbook_rendering` + `test_detector_table_structure`（被重排的行列式区块）、
+`test_capture_multi_resolution_and_theme_snapshots`（双主题截图）。
+
+**布局**
+
+水平溢出 0、文本裁切 0（1600×1100 与 1366 视口均验），9 个 section 全部渲染正常，
+百度地图容器与 SUMO 沙盒徽章状态不变。
+
+### 四、已知限制
+
+- **审计脚本自己出过三次错，每次都让人差点去修不存在的问题**，逐一记录在此以免后人重蹈：
+  1. 首版把 `rgba(0,0,0,0)`（透明）当成有效背景，浅色主题报出 96 处含大量 `ratio=1.00` 的假阳性；
+     真实值是 64。
+  2. 修正 alpha 合成后，**渐变背景仍被漏掉**——`linear-gradient` 元素的 `backgroundColor` 是透明，
+     脚本于是把页面底色当成它的底色，`.brand-badge` / `.btn-primary` 被误报为
+     "白字打在白底(1.00)"；实测这两处是 **8.72:1 / 6.7:1**，完全合格。
+  3. **主题存储键写错**：脚本用 `traffic-theme`，而应用实际读写的是 `traffic_dss_theme`。
+     于是"浅色主题审计"其实一直在**重复审计深色**，浅色真实存在的 23 处被完全掩盖。
+     > 这一条最值得记住：**一个静默失效的测试比没有测试更危险**，它会给出"已验证"的错觉。
+- **E2E 进程在跑完后不退出**（17 项全 PASSED，但 pytest 进程挂住），这是本机沙箱下
+  Chromium 回收阻塞的已知问题，与本次改动无关，`pytest.ini` 第 8–10 行已记录该现象。
+  本次通过把输出落到文件再读取的方式取证，**未等待进程自然退出**。
+- 视觉节奏只做了「分节 + 间距 + 标签层级」三件事，未动配色方案与栅格结构。
+  如果评审想要更激进的重排（比如 KPI 卡改成带 sparkline 的形态），属于下一轮。
+
+### 五、后续待办
+
+- [ ] 检测器表格（section 8）**数据态**未专门验证：当前截图是空态（"运行推演后显示检测器数据"），
+      有数据时的行高/密度需要再截一次图确认
+- [ ] `--los-*` 目前有单一出口，但地图图例与检测器 chip 仍有少量字面量色值，
+      可考虑一并收敛（不影响正确性，属整洁性）
+- [ ] 建议把 `_ui_audit2.py` 收进 `scripts/` 并接进 CI：它抓到的都是**肉眼不觉得有问题**的缺陷
+      （2.26:1、2.5:1 这种），靠人工评审是抓不住的
+- [ ] 提交到分支 `feat/ui-refresh-20260915`，**由人工评审后再合入 main**
+
+---
+
+
 ## [2026-09-15] 安全边界与界面一致性修复
 
 - 模型管理操作要求管理令牌；未配置时关闭热更新与模型探测。默认拒绝跨域访问，仅接受显式配置的来源。
