@@ -1,5 +1,100 @@
 # 更新日志 (Changelog)
 
+## [2026-09-16] 清除 main 遗留的合并冲突标记 + 百度路径规划接入 JS API 兜底
+
+**主题**：本次一并处理两件事 —— ① 修复 `main` 上**已经坏掉**的前端（未解决的合并冲突被直接提交）；
+② 让百度地图「真实绕行路线对比」在**后端通道不可用**时仍能给出真实路线，且**如实标注来源**。
+
+**影响文件**：`src/web/static/index.html`、`src/web/static/js/baidu_map.js`
+**行为变更**：有。路线对比新增前端 JS API 兜底通道；路线卡片新增「数据来源」标注。
+
+---
+
+### 一、为什么改
+
+**问题 1：main 的前端是坏的（P0）**
+
+`1e5efa1`（feat(ui): Signal Console visual system）把一份**含未解决合并冲突**的
+`index.html` 直接提交进了 main，文件里残留：
+
+```
+<<<<<<< HEAD
+...
+=======
+...
+>>>>>>> 2dd3103 (feat(ui): Signal Console visual system ...)
+```
+
+浏览器不会把这三个标记当语法，而是**当普通文本渲染** —— 第 2 节（智能体思维链）的标题区
+会直接显示 `<<<<<<< HEAD` 这类裸文本，布局也是塌的。任何人 clone/pull main 都会拿到这个坏版本。
+
+**问题 2：后端路径规划通道始终不可用**
+
+大屏「真实绕行路线对比」由后端 `/api/baidu/route` 代理调用百度 **REST** Web 服务 API。
+但项目 `.env` 中配置的 AK 是**浏览器端**类型（按 **Referer 白名单** 校验），
+服务器侧请求不带 Referer，被百度拒绝：
+
+| 阶段 | 返回 | 含义 |
+|---|---|---|
+| 浏览器端 AK 直接调 REST | `status=240` | APP 服务被禁用（AK 类型不对） |
+| 换服务端 AK 后 | `status=210` | 类型对了，但**调用方 IP 不在白名单** |
+
+即：后端通道的修复依赖百度控制台侧的配置，**不是代码能解决的**。在此之前，
+大屏的路线对比功能等于失效。
+
+### 二、改了什么
+
+**1) `index.html`（净 -7 行）**
+
+删除冲突块的三行标记与旧写法一侧，**保留 Signal Console 新视觉侧**：
+
+```html
+<div class="section-header-left">
+  <h2 class="section-title">
+    <svg class="icon"><use href="#i-cpu"/></svg>
+    <span>智能体思维链推理与拥堵归因</span>
+  </h2>
+  <span class="section-title-en">2 · Agent CoT Diagnosis Engine · LLM Reasoning Layer</span>
+</div>
+<span class="section-chip">LLM Reasoning Layer</span>
+```
+
+选择依据：新侧使用 `.section-header-left` / `.section-title-en` / `.section-chip`
+三个新 token，与整站新 UI 体系一致；旧侧的 inline style 写法已被新体系取代。
+**信息无损失** —— 两侧的「LLM Reasoning Layer」文案都保留了（新侧用 `.section-chip` 承载）。
+
+**2) `baidu_map.js`（+167 / -21）**
+
+- 新增 `searchRouteViaJsApi()`：用浏览器端 `BMapGL.DrivingRoute` 直接取真实驾车路线。
+  关键的 `renderOptions:{map:null, autoViewport:false}` 防止百度把路线**重复画一遍**；
+  另加 15s 超时保护。
+- 新增 `parseKm()` / `parseMinutes()`：解析 BMapGL 返回的中文单位字符串（`"6.6公里"` / `"23分钟"`）。
+- 新增 `planToRoute()`：用 `plan.getRoute(k).getPath()` 取每条的几何。
+- `compareRoutes()` 改为**双通道**：后端 `/api/baidu/route` 优先 → 失败则自动走 JS API 兜底；
+  **卡片上如实标注本条数据来自哪个通道**，兜底时同时显示后端失败原因（如 `status=210`）。
+
+### 三、怎么验证
+
+- **前端实测**（Playwright 真实渲染）：地图底图、实时路况、驾车路线三档均正常；
+  JS API 通道 `status=0` 返回**真实路线**（西直门走廊），页面上**不再出现冲突标记裸文本**。
+- **后端接口**：`/api/baidu/route` 仍返回 `status=210` —— 这是已知环境问题，
+  **未伪造成功**；页面会如实展示该失败原因并切到 JS API 通道。
+- 行数核对：`index.html` 751 → 744；`baidu_map.js` 234 → 387。
+
+### 四、已知限制
+
+- **后端路径规划通道仍不可用**：服务端 AK 的 IP 白名单尚未在百度控制台生效（返回 210）。
+  当前由前端 JS API 通道交付真实路线，**页面已标注数据来源，不存在把兜底数据伪装成后端结果的情况**。
+- JS API 通道依赖浏览器能访问百度域名；完全离线环境下该通道同样不可用（此时按空态处理，不编数据）。
+
+### 五、后续待办
+
+- 在百度地图控制台把服务端 AK 的 IP 白名单配好（并确认所属应用正确），后端通道即可恢复；
+  恢复后双通道会自动优先走后端，**无需再改代码**。
+- 建议在 CI 增加一条**冲突标记扫描**（grep `<<<<<<<` / `>>>>>>>`），防止同类问题再次进入 main。
+
+---
+
 ## [2026-09-15] UI 可读性与信息层级整改（纯 CSS，无功能变更）
 
 **主题**：把前端从"能看"提到"经得起投影和评审"。所有改动集中在 `src/web/static/css/style.css`
