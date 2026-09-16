@@ -23,7 +23,7 @@
   /* ---- Text 层级 ---- */
   --text-primary: #eef4fb;
   --text-secondary: #9fb0c9;
-  --text-muted: #6b7d99;
+  --text-muted: #7d90ab;
 
   /* ---- Brand & signal semantics ---- */
   --brand: #14b8a6;
@@ -95,7 +95,7 @@
 
   --text-primary: #14212f;
   --text-secondary: #46586f;
-  --text-muted: #5f7188;
+  --text-muted: #525f74;
 
   --brand: #0b6e66;
   --brand-strong: #0f766e;
@@ -415,6 +415,10 @@ body {
 
 /* WCAG: the 11px chip label is small text; the light theme needs a near-opaque
    tint and the darker brand step to clear 4.5:1 on the tinted pill. */
+[data-theme="light"] .btn-primary { color: #ffffff; text-shadow: none; }
+[data-theme="light"] .alert-badge { background: var(--signal-red); color: #ffffff; }
+[data-theme="light"] .modal-footer .btn-primary { color: #ffffff; }
+
 [data-theme="light"] .section-chip {
   background: #d2ebe8;
   color: #0a5f58;
@@ -697,7 +701,9 @@ input:checked + .switch-slider:before {
   border-radius: var(--radius-md);
   border: 1px solid var(--brand-strong);
   background: linear-gradient(180deg, var(--brand) 0%, var(--brand-strong) 100%);
-  color: #ffffff;
+  /* WCAG: dark theme uses deep ink (its teal is lighter); light theme's
+   darker --brand-strong pairs with white at 4.54:1. */
+  color: #02110e;
   font-size: 14px;
   font-weight: 650;
   font-family: inherit;
@@ -707,7 +713,7 @@ input:checked + .switch-slider:before {
   justify-content: center;
   gap: 9px;
   box-shadow: var(--shadow-brand), inset 0 1px 0 rgba(255, 255, 255, 0.18);
-  text-shadow: 0 1px 1px rgba(2, 6, 14, 0.25);
+  text-shadow: none;
 }
 
 .btn-primary:hover {
@@ -847,9 +853,10 @@ input:checked + .switch-slider:before {
 
 .alert-badge {
   background: var(--signal-red);
-  color: #fff;
+  /* WCAG: white on the red fill measures 2.92:1; deep ink clears it. */
+  color: #2a0505;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 750;
   padding: 5px 12px;
   border-radius: 999px;
   white-space: nowrap;
@@ -1128,6 +1135,9 @@ input:checked + .switch-slider:before {
   border: 1px solid color-mix(in srgb, var(--signal-amber) 32%, transparent);
   color: var(--signal-amber);
 }
+
+[data-theme="light"] .strategy-card.strat-a .strategy-tag { color: #7a4d06; }
+[data-theme="light"] .strategy-card.strat-b .strategy-tag { color: #085d4b; }
 
 .strategy-card.strat-b .strategy-tag {
   background: color-mix(in srgb, var(--signal-green) 14%, transparent);
@@ -1457,7 +1467,7 @@ input:checked + .switch-slider:before {
 
 [data-theme="light"] .report-content code.report-code {
   background: rgba(13, 148, 136, 0.08);
-  color: var(--brand-strong);
+  color: #0a544d;
 }
 
 .report-content .table-responsive {
@@ -1832,11 +1842,13 @@ input:checked + .switch-slider:before {
 }
 
 [data-theme="light"] .map-unconfigured-desc code {
-  color: var(--brand-strong);
+  color: #0a544d;
   background: var(--brand-softer);
 }
 
 .map-unconfigured-desc a { color: var(--accent-cyan); }
+
+[data-theme="light"] .map-unconfigured-desc a { color: #0b5d70; }
 
 .map-toolbar {
   display: flex;
@@ -2138,7 +2150,7 @@ input:checked + .switch-slider:before {
   height: 26px;
   border-radius: 8px;
   background: var(--accent-blue);
-  color: #fff;
+  color: #04121f;
   font-size: 13px;
   font-weight: 750;
   flex-shrink: 0;
@@ -2149,9 +2161,30 @@ input:checked + .switch-slider:before {
 .action-step-card.phase-1 .action-step-num { background: var(--signal-amber); }
 .action-step-card.phase-2 .action-step-num { background: var(--signal-green); }
 
-.action-step-card.phase-0 .action-step-num { color: var(--state-bad-text); }
+/* Dark ink on the colored fills: white measured 1.06-3.29:1 depending on hue. */
+.action-step-num { color: #04121f; }
+.action-step-card.phase-0 .action-step-num { color: #2a0505; }
 .action-step-card.phase-1 .action-step-num { color: #231303; }
 .action-step-card.phase-2 .action-step-num { color: #04241c; }
+
+/* Light theme: ink-on-raw-blue still fails (3.66), so the numerals switch to
+   tinted chips with dark text - the pattern from the team a11y pass. */
+[data-theme="light"] .action-step-card .action-step-num {
+  background: var(--accent-blue-glow);
+  color: #1e3a8a;
+}
+[data-theme="light"] .action-step-card.phase-0 .action-step-num {
+  background: var(--tint-red, rgba(212, 61, 61, 0.12));
+  color: #8f1d1d;
+}
+[data-theme="light"] .action-step-card.phase-1 .action-step-num {
+  background: rgba(199, 125, 10, 0.14);
+  color: #6d4405;
+}
+[data-theme="light"] .action-step-card.phase-2 .action-step-num {
+  background: rgba(13, 154, 118, 0.14);
+  color: #0a5c48;
+}
 
 .action-step-title {
   font-size: 14px;
