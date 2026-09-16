@@ -63,7 +63,19 @@ JS = r"""
   function parse(c){
     if(!c) return null;
     if(c==='transparent') return [0,0,0,0];
-    let m=c.match(/rgba?\(([^)]+)\)/);
+    // CSS Color 4: color(srgb r g b / a) — Chromium emits this for color-mix()
+    // results. Without this branch every color-mix() surface reads as fully
+    // transparent and drops out of the composite (dark theme mis-measured).
+    let m=c.match(/color\(srgb\s+([^)]+)\)/);
+    if(m){
+      const p=m[1].split(/[\s\/]+/).filter(x=>x.length).map(parseFloat);
+      if(p.length>=3){
+        return [Math.round(p[0]*255), Math.round(p[1]*255), Math.round(p[2]*255),
+                p.length>3?p[3]:1];
+      }
+      return null;
+    }
+    m=c.match(/rgba?\(([^)]+)\)/);
     if(!m) return null;
     const p=m[1].split(',').map(s=>parseFloat(s.trim()));
     return [p[0],p[1],p[2],p.length>3?p[3]:1];
@@ -116,11 +128,32 @@ JS = r"""
       }
       n=n.parentElement;
     }
-    const rootC=parse(getComputedStyle(document.documentElement).backgroundColor);
-    if(rootC && rootC[3]>0) stack.push(rootC);
     const bodyC=parse(getComputedStyle(document.body).backgroundColor);
     let base=[255,255,255,1];
-    if(bodyC && bodyC[3]>0) base=bodyC;
+    if(bodyC && bodyC[3]>0){
+      base=bodyC;
+    } else if(getComputedStyle(document.body).backgroundImage!=='none'){
+      // Body paints with a background-IMAGE over a transparent backgroundColor.
+      // The image is pushed above `base` by the caller, so `base` must be the
+      // page's real opaque colour (html's --bg-app), NOT hardcoded white —
+      // otherwise every dark-theme text is measured against a phantom white.
+      const rootC2=parse(getComputedStyle(document.documentElement).backgroundColor);
+      if(rootC2 && rootC2[3]>0){
+        base=rootC2;
+      } else {
+        // html is also transparent (both gradients live on body): read the
+        // theme's opaque base colour from the CSS token itself, via a probe
+        // element (custom properties inherit, so any in-flow node resolves
+        // them; documentElement can return '' mid-paint in some pipelines).
+        const probe=document.createElement('i');
+        probe.style.display='none';
+        document.body.appendChild(probe);
+        const appVar=getComputedStyle(probe).getPropertyValue('--bg-app').trim();
+        probe.remove();
+        const appC=parse(appVar);
+        if(appC && appC[3]>0) base=appC;
+      }
+    }
     let out=base;
     for(let i=stack.length-1;i>=0;i--) out=over(stack[i],out);
     return out;

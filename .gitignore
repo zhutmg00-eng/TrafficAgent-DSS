@@ -71,3 +71,6 @@ experiments/closed_loop_gain_raw_*.json
 .pytest_cache/
 tests/e2e/screenshots/
 
+
+# UI contrast audit artifacts (local measurement output)
+ui_audit_*.json
