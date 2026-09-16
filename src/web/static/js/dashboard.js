@@ -194,8 +194,15 @@ function toggleTheme() {
 
 function updateThemeIcon() {
   const btn = document.getElementById('themeToggleBtn');
-  if (btn) {
-    btn.innerHTML = state.theme === 'dark' ? '☀️' : '🌙';
+  if (!btn) return;
+  // In dark mode offer the sun (switch to light); in light mode offer the moon.
+  // Emoji replaced by the inline SVG sprite for a consistent 1.75px icon language.
+  const use = btn.querySelector('use');
+  if (use) {
+    use.setAttribute('href', state.theme === 'dark' ? '#i-sun' : '#i-moon');
+  } else {
+    btn.innerHTML = '<svg class="icon" id="themeToggleIcon"><use href="' +
+      (state.theme === 'dark' ? '#i-sun' : '#i-moon') + '"/></svg>';
   }
 }
 
@@ -245,6 +252,14 @@ function bindEventHandlers() {
   // Theme Toggle
   const themeBtn = document.getElementById('themeToggleBtn');
   if (themeBtn) themeBtn.addEventListener('click', toggleTheme);
+
+  // Section quick-jump navigation (smooth scroll, no behavior change elsewhere)
+  document.querySelectorAll('.btn-section-nav[data-target]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const target = document.getElementById(btn.getAttribute('data-target'));
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
 
   // Scenario Dropdowns
   const corridorSelect = document.getElementById('corridorSelect');
@@ -547,8 +562,7 @@ function renderRolloutKPIs() {
     const grade = comp?.overall_effectiveness_grade;
     if (grade) {
       const g = String(grade);
-      const glyph = g.startsWith('A') ? '🟢' : (g.startsWith('B') ? '🟡' : (g.startsWith('C') ? '🟠' : '🔴'));
-      ratingEl.textContent = `综合评级：${glyph} ${g}`;
+            ratingEl.textContent = `综合评级：${g}`;
     } else if (comp) {
       ratingEl.textContent = '综合评级：不可用（缺少基线对比指标）';
     } else {
@@ -604,8 +618,8 @@ function renderExecutionModeNotice() {
   if (banner) {
     if (degraded) {
       banner.textContent = reason
-        ? `⚠ 当前展示为降级/标定数据（非 SUMO 微观仿真实测结果）：${reason}`
-        : '⚠ 当前展示为标定经验数据（非 SUMO 微观仿真实测结果）。请在控制面板勾选「微观 SUMO 进程推演」后重新运行，以获得实测指标。';
+        ? `当前展示为降级/标定数据（非 SUMO 微观仿真实测结果）：${reason}`
+        : '当前展示为标定经验数据（非 SUMO 微观仿真实测结果）。请在控制面板勾选「微观 SUMO 进程推演」后重新运行，以获得实测指标。';
       banner.classList.add('visible');
     } else {
       banner.classList.remove('visible');
@@ -614,7 +628,7 @@ function renderExecutionModeNotice() {
 
   if (degradedBanner) {
     if (degraded && reason) {
-      degradedBanner.textContent = `⚠️ 系统推演降级提示：${reason}`;
+      degradedBanner.textContent = `系统推演降级提示：${reason}`;
       degradedBanner.style.display = 'block';
     } else {
       degradedBanner.style.display = 'none';
@@ -925,7 +939,7 @@ async function executeAgentDecisionPipeline() {
   showTaskVeil();
 
   try {
-    showToast('🧠 智能体正在解析路网态势并执行思维链诊断...', 'info');
+    showToast('智能体正在解析路网态势并执行思维链诊断...', 'info');
 
     // 1. Diagnose Bottleneck with current traffic state
     const diagRes = await fetch('/api/diagnose', {
@@ -966,7 +980,7 @@ async function executeAgentDecisionPipeline() {
       run_physical_sandbox: state.runPhysicalSandbox
     };
 
-    showToast('🚀 正在执行多方案数字孪生沙盒推演与 A/B 量化评估...', 'info');
+    showToast('正在执行多方案数字孪生沙盒推演与 A/B 量化评估...', 'info');
 
     const rolloutRes = await fetch('/api/rollout', {
       method: 'POST',
@@ -1015,7 +1029,7 @@ async function executeAgentDecisionPipeline() {
       showToast(
         delayImp === null
           ? '推演完成，但未返回方案 B 的对比指标，请检查执行模式与控制证据。'
-          : `🎉 智能体协同推演完成！方案 B 延误降低 ${delayImp}%`,
+          : `智能体协同推演完成，方案 B 延误降低 ${delayImp}%`,
         delayImp === null ? 'info' : 'success'
       );
     } else {
@@ -1168,7 +1182,7 @@ function copyReportToClipboard() {
     return;
   }
   navigator.clipboard.writeText(state.reportMarkdown).then(() => {
-    showToast('✅ 决策支持简报已成功复制到剪贴板！', 'success');
+    showToast('决策支持简报已成功复制到剪贴板', 'success');
   }).catch(() => {
     showToast('复制失败，请手动选取复制', 'error');
   });
@@ -1188,7 +1202,7 @@ function downloadReportMarkdown() {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
-  showToast('✅ 决策支持简报已成功下载！', 'success');
+  showToast('决策支持简报已成功下载', 'success');
 }
 
 // Toast Notifications
@@ -1203,7 +1217,7 @@ function showToast(message, type = 'success') {
 
   const toast = document.createElement('div');
   toast.className = `toast ${type === 'error' ? 'error' : ''}`;
-  toast.innerHTML = `<span>${type === 'error' ? '⚠️' : '🚦'}</span> <span>${escapeHtml(message)}</span>`;
+  toast.innerHTML = `<svg class="icon icon-sm" style="color:${type === 'error' ? 'var(--signal-red)' : 'var(--brand)'}"><use href="${type === 'error' ? '#i-alert-triangle' : '#i-activity'}"/></svg> <span>${escapeHtml(message)}</span>`;
   container.appendChild(toast);
 
   setTimeout(() => {
@@ -1472,7 +1486,7 @@ function renderActionChecklist(data) {
 
   // Render plain summary
   if (data.plain_summary) {
-    summaryEl.innerHTML = `<strong>📌 行动概要：</strong>${escapeHtml(data.plain_summary)}`;
+    summaryEl.innerHTML = `<strong>行动概要：</strong>${escapeHtml(data.plain_summary)}`;
     summaryEl.style.display = 'block';
   } else {
     summaryEl.style.display = 'none';
@@ -1495,11 +1509,11 @@ function renderActionChecklist(data) {
         </div>
         <div class="action-step-detail">
           ${s.action ? `<div class="action-detail-item"><span class="action-detail-label">行动内容</span><span class="action-detail-value">${escapeHtml(s.action)}</span></div>` : ''}
-          ${s.where ? `<div class="action-detail-item"><span class="action-detail-label">📍 位置</span><span class="action-detail-value">${escapeHtml(s.where)}</span></div>` : ''}
-          ${s.when ? `<div class="action-detail-item"><span class="action-detail-label">⏰ 时机</span><span class="action-detail-value">${escapeHtml(s.when)}</span></div>` : ''}
-          ${s.expected ? `<div class="action-detail-item"><span class="action-detail-label">🎯 预期效果</span><span class="action-detail-value">${escapeHtml(s.expected)}</span></div>` : ''}
-          ${s.owner ? `<div class="action-detail-item"><span class="action-detail-label">👤 责任</span><span class="action-detail-value">${escapeHtml(s.owner)}</span></div>` : ''}
-          ${s.verified !== undefined ? `<div class="action-detail-item"><span class="action-detail-label">✅ 验证</span><span class="action-detail-value">${s.verified ? '已验证' : '待验证'}</span></div>` : ''}
+          ${s.where ? `<div class="action-detail-item"><span class="action-detail-label">位置</span><span class="action-detail-value">${escapeHtml(s.where)}</span></div>` : ''}
+          ${s.when ? `<div class="action-detail-item"><span class="action-detail-label">时机</span><span class="action-detail-value">${escapeHtml(s.when)}</span></div>` : ''}
+          ${s.expected ? `<div class="action-detail-item"><span class="action-detail-label">预期效果</span><span class="action-detail-value">${escapeHtml(s.expected)}</span></div>` : ''}
+          ${s.owner ? `<div class="action-detail-item"><span class="action-detail-label">责任</span><span class="action-detail-value">${escapeHtml(s.owner)}</span></div>` : ''}
+          ${s.verified !== undefined ? `<div class="action-detail-item"><span class="action-detail-label">验证</span><span class="action-detail-value">${s.verified ? '已验证' : '待验证'}</span></div>` : ''}
         </div>
       </div>
     `;
@@ -1749,7 +1763,7 @@ function initLlmModal() {
     eyeBtn.addEventListener('click', () => {
       const isPwd = apiKeyInput.type === 'password';
       apiKeyInput.type = isPwd ? 'text' : 'password';
-      eyeBtn.textContent = isPwd ? '🔒' : '👁️';
+      eyeBtn.textContent = isPwd ? '●' : '○';
     });
   }
 
@@ -1788,19 +1802,19 @@ function initLlmModal() {
               customModelInput.value = modelSelect.value;
             }
           }
-          showStatus(`✅ 成功探测到 ${data.count} 个可用模型！已自动加载至下拉选单。`, 'success');
+          showStatus(`成功探测到 ${data.count} 个可用模型，已自动加载至下拉选单。`, 'success');
           showToast(`成功探测到 ${data.count} 个模型`, 'success');
         } else {
-          showStatus(`❌ 模型自动识别失败：${data.error || '未返回可用模型列表，请核对 Base URL 与 Key'}`, 'error');
+          showStatus(`模型自动识别失败：${data.error || '未返回可用模型列表，请核对 Base URL 与 Key'}`, 'error');
           showToast(data.error || '未能探测到模型', 'error');
         }
       } catch (err) {
-        showStatus(`❌ 网络请求异常：${err.message}`, 'error');
+        showStatus(`网络请求异常：${err.message}`, 'error');
         showToast('请求探测失败', 'error');
       } finally {
         detectBtn.disabled = false;
         if (detectSpinner) detectSpinner.style.display = 'none';
-        if (detectBtnText) detectBtnText.textContent = '🔍 自动识别可用模型 (Auto-detect Models)';
+        if (detectBtnText) detectBtnText.textContent = '自动识别可用模型 (Auto-detect Models)';
       }
     });
   }
@@ -1833,7 +1847,7 @@ function initLlmModal() {
 
         if (res.ok) {
           const data = await res.json();
-          showStatus(`✅ 配置已热更新并立即生效！当前模型：${data.llm.model}`, 'success');
+          showStatus(`配置已热更新并立即生效，当前模型：${data.llm.model}`, 'success');
           showToast(`大模型已切换为：${data.llm.model}`, 'success');
 
           const brainText = document.getElementById('agentBrainStatusText');
@@ -1852,7 +1866,7 @@ function initLlmModal() {
         showStatus(`保存异常：${err.message}`, 'error');
       } finally {
         saveBtn.disabled = false;
-        saveBtn.textContent = '💾 保存并立即生效';
+        saveBtn.textContent = '保存并立即生效';
       }
     });
   }

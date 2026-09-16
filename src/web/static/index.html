@@ -7,11 +7,37 @@
   <meta name="description" content="2026年第十六届北京市大学生交通科技大赛 · ITSAC 2026 创新挑战赛（赛题2）高品质决策支持系统">
   <!-- Stylesheet -->
   <link rel="stylesheet" href="/static/css/style.css">
-  <!-- Brand favicon (previously absent: /favicon.ico returned 404 in the browser tab) -->
+  <!-- Brand favicon (teal signal-light mark, matches the in-page brand logo) -->
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <!-- 在 CSS 渲染前确定主题，避免刷新时闪现错误底色。
-       默认主题必须与 :root（深色）以及 dashboard.js 的 state.theme 默认值一致：
-       这三处曾经一处写 light、两处写 dark，导致首屏先浅后深闪一下。 -->
+  <!-- Inline SVG icon sprite (Feather Icons, MIT): replaces emoji icons.
+       <use href> cannot resolve an external file on file:// , so the sprite is inlined once here. -->
+  <svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+    <defs>
+      <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+      <symbol id="i-cpu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></symbol>
+      <symbol id="i-map-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></symbol>
+      <symbol id="i-map" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></symbol>
+      <symbol id="i-zap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></symbol>
+      <symbol id="i-bar-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></symbol>
+      <symbol id="i-file-text" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></symbol>
+      <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></symbol>
+      <symbol id="i-radio" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></symbol>
+      <symbol id="i-route" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></symbol>
+      <symbol id="i-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></symbol>
+      <symbol id="i-monitor" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></symbol>
+      <symbol id="i-alert-triangle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>
+      <symbol id="i-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></symbol>
+      <symbol id="i-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></symbol>
+      <symbol id="i-crosshair" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="22" y1="12" x2="18" y2="12"/><line x1="6" y1="12" x2="2" y2="12"/><line x1="12" y1="6" x2="12" y2="2"/><line x1="12" y1="22" x2="12" y2="18"/></symbol>
+    </defs>
+  </svg>
+  <!-- Resolve the theme before first paint to avoid a light/dark flash.
+       Default must stay consistent with :root (dark) and dashboard.js state.theme. -->
   <script>
     document.documentElement.setAttribute(
       'data-theme',
@@ -31,7 +57,7 @@
   <!-- Top Application Header -->
   <header class="header">
     <div class="header-brand">
-      <span class="brand-icon">🚦</span>
+      <img src="/static/favicon.svg" alt="TrafficAgent-DSS 徽标" class="brand-logo">
       <div>
         <div style="display:flex;align-items:center;gap:8px;">
           <h1 class="brand-title">TrafficAgent-DSS</h1>
@@ -50,8 +76,13 @@
         <span class="status-dot"></span>
         <span id="agentBrainStatusText">智能体大脑：在线 (CoT Agent)</span>
       </div>
-      <button class="btn-llm-settings" id="openLlmModalBtn" title="配置大模型端点与自动识别可用模型">⚙️ 模型配置</button>
-      <button class="theme-toggle" id="themeToggleBtn" title="切换深色/浅色模式">☀️</button>
+      <button class="btn-llm-settings" id="openLlmModalBtn" title="配置大模型端点与自动识别可用模型">
+        <svg class="icon"><use href="#i-settings"/></svg>
+        <span>模型配置</span>
+      </button>
+      <button class="theme-toggle" id="themeToggleBtn" title="切换深色/浅色模式" aria-label="切换深色/浅色模式">
+        <svg class="icon" id="themeToggleIcon"><use href="#i-sun"/></svg>
+      </button>
     </div>
   </header>
 
@@ -60,105 +91,129 @@
 
     <!-- Left Control Sidebar -->
     <aside class="sidebar-panel">
-      <!-- Scenario Setup Card -->
-      <div class="panel-card">
-        <h2 class="panel-title">
-          <span>⚙️</span> 仿真与实验场景配置
-        </h2>
+      <div class="sidebar-inner">
 
-        <div class="form-group">
-          <label class="form-label" for="corridorSelect">目标交通走廊</label>
-          <select class="form-select" id="corridorSelect">
-            <option value="corridor_arterial">典型城市交通走廊 (主干道-瓶颈合流段)</option>
-            <option value="corridor_2nd_ring">城市快速路合流区 (快速路合流走廊)</option>
-          </select>
-        </div>
+        <!-- Scenario Setup Card -->
+        <div class="panel-card">
+          <h2 class="panel-title">
+            <svg class="icon"><use href="#i-sliders"/></svg>
+            <span>仿真与实验场景配置</span>
+          </h2>
 
-        <div class="form-group">
-          <label class="form-label" for="congestionSelect">拥堵诱因工况</label>
-          <select class="form-select" id="congestionSelect">
-            <option value="incident_peak">晚高峰潮汐高负荷 + 突发事故 (占道停靠)</option>
-            <option value="overflow">常态化高峰期交叉口失衡溢流</option>
-            <option value="bottleneck_reduce">施工车道缩减 (3车道骤减至1车道)</option>
-          </select>
-        </div>
-
-        <div class="form-group slider-group">
-          <div class="slider-meta">
-            <span>推演时间窗口</span>
-            <span id="durationVal" style="font-weight:600;color:var(--text-primary);">600s</span>
-          </div>
-          <input type="range" class="form-slider" id="durationSlider" min="300" max="900" step="60" value="600">
-        </div>
-
-        <div class="form-group slider-group">
-          <div class="slider-meta">
-            <span>事故发生时间</span>
-            <span id="incidentStartVal" style="font-weight:600;color:var(--text-primary);">150s</span>
-          </div>
-          <input type="range" class="form-slider" id="incidentStartSlider" min="60" max="300" step="30" value="150">
-        </div>
-
-        <div class="form-group slider-group">
-          <div class="slider-meta">
-            <span>事故撤离恢复时间</span>
-            <span id="incidentEndVal" style="font-weight:600;color:var(--text-primary);">420s</span>
-          </div>
-          <input type="range" class="form-slider" id="incidentEndSlider" min="300" max="600" step="30" value="420">
-        </div>
-      </div>
-
-      <!-- Agent Governance Tools Card -->
-      <div class="panel-card">
-        <h2 class="panel-title">
-          <span>🤖</span> 智能体协同工具调度
-        </h2>
-
-        <div class="toggle-group">
-          <div class="toggle-item">
-            <span class="toggle-text">VMS 动态诱导分流</span>
-            <label class="toggle-switch">
-              <input type="checkbox" id="toggleReroute" checked>
-              <span class="switch-slider"></span>
-            </label>
+          <div class="form-group">
+            <label class="form-label" for="corridorSelect">目标交通走廊</label>
+            <select class="form-select" id="corridorSelect">
+              <option value="corridor_arterial">典型城市交通走廊 (主干道-瓶颈合流段)</option>
+              <option value="corridor_2nd_ring">城市快速路合流区 (快速路合流走廊)</option>
+            </select>
           </div>
 
-          <div class="toggle-item">
-            <span class="toggle-text">干线动态绿波协调</span>
-            <label class="toggle-switch">
-              <input type="checkbox" id="toggleGreenWave" checked>
-              <span class="switch-slider"></span>
-            </label>
+          <div class="form-group">
+            <label class="form-label" for="congestionSelect">拥堵诱因工况</label>
+            <select class="form-select" id="congestionSelect">
+              <option value="incident_peak">晚高峰潮汐高负荷 + 突发事故 (占道停靠)</option>
+              <option value="overflow">常态化高峰期交叉口失衡溢流</option>
+              <option value="bottleneck_reduce">施工车道缩减 (3车道骤减至1车道)</option>
+            </select>
           </div>
 
-          <div class="toggle-item">
-            <span class="toggle-text">Webster 自适应信号调控</span>
-            <label class="toggle-switch">
-              <input type="checkbox" id="toggleWebster" checked>
-              <span class="switch-slider"></span>
-            </label>
+          <div class="form-group slider-group">
+            <div class="slider-meta">
+              <span>推演时间窗口</span>
+              <span id="durationVal">600s</span>
+            </div>
+            <input type="range" class="form-slider" id="durationSlider" min="300" max="900" step="60" value="600">
           </div>
 
-          <div class="toggle-item">
-            <span class="toggle-text">微观 SUMO 进程推演</span>
-            <label class="toggle-switch">
-              <input type="checkbox" id="toggleSandbox" checked>
-              <span class="switch-slider"></span>
-            </label>
+          <div class="form-group slider-group">
+            <div class="slider-meta">
+              <span>事故发生时间</span>
+              <span id="incidentStartVal">150s</span>
+            </div>
+            <input type="range" class="form-slider" id="incidentStartSlider" min="60" max="300" step="30" value="150">
+          </div>
+
+          <div class="form-group slider-group">
+            <div class="slider-meta">
+              <span>事故撤离恢复时间</span>
+              <span id="incidentEndVal">420s</span>
+            </div>
+            <input type="range" class="form-slider" id="incidentEndSlider" min="300" max="600" step="30" value="420">
           </div>
         </div>
 
-        <div style="margin-top:20px;">
-          <button class="btn-primary" id="runSimulationBtn">
-            <div class="spinner"></div>
-            <span>🚀 启动智能体诊断与推演 (Run Agent DSS)</span>
-          </button>
+        <!-- Agent Governance Tools Card -->
+        <div class="panel-card">
+          <h2 class="panel-title">
+            <svg class="icon"><use href="#i-cpu"/></svg>
+            <span>智能体协同工具调度</span>
+          </h2>
+
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <span class="toggle-text">VMS 动态诱导分流</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="toggleReroute" checked>
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+
+            <div class="toggle-item">
+              <span class="toggle-text">干线动态绿波协调</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="toggleGreenWave" checked>
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+
+            <div class="toggle-item">
+              <span class="toggle-text">Webster 自适应信号调控</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="toggleWebster" checked>
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+
+            <div class="toggle-item">
+              <span class="toggle-text">微观 SUMO 进程推演</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="toggleSandbox" checked>
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div style="margin-top:20px;">
+            <button class="btn-primary" id="runSimulationBtn">
+              <div class="spinner"></div>
+              <svg class="icon"><use href="#i-zap"/></svg>
+              <span>启动智能体诊断与推演 (Run Agent DSS)</span>
+            </button>
+          </div>
         </div>
+
       </div>
     </aside>
 
     <!-- Main Content Flow -->
     <main class="main-content">
+
+      <!-- Section quick-jump navigation -->
+      <nav class="section-nav" aria-label="分区快速导航">
+        <span class="section-nav-label">
+          <svg class="icon icon-sm"><use href="#i-layers"/></svg>
+          <span>分区导航</span>
+        </span>
+        <button class="btn-section-nav" data-target="sec-awareness">态势感知</button>
+        <button class="btn-section-nav" data-target="sec-baidu">数字孪生底座</button>
+        <button class="btn-section-nav" data-target="sec-cot">智能体推理</button>
+        <button class="btn-section-nav" data-target="sec-strategy">治理预案</button>
+        <button class="btn-section-nav" data-target="sec-rollout">沙盒推演</button>
+        <button class="btn-section-nav" data-target="sec-report">决策简报</button>
+        <button class="btn-section-nav" data-target="sec-map">路网地图</button>
+        <button class="btn-section-nav" data-target="sec-checklist">行动清单</button>
+        <button class="btn-section-nav" data-target="sec-detectors">检测器数据</button>
+      </nav>
 
       <!-- Degraded Fallback Notice Banner -->
       <div id="degradedNoticeBanner" class="degraded-banner" style="display:none;"></div>
@@ -166,7 +221,9 @@
       <!-- Real-time Emergency Warning Banner -->
       <div class="alert-card">
         <div class="alert-content">
-          <span class="alert-icon">🚨</span>
+          <span class="alert-icon">
+            <svg class="icon"><use href="#i-alert-triangle"/></svg>
+          </span>
           <div>
             <div class="alert-title" id="alertTitle">系统警报：走廊瓶颈段发生突发占道拥堵</div>
             <div class="alert-desc" id="alertDesc">核心节点 J1_J2 排队已达 165 米 (库容比 55%)。若无干预，将在 180 秒内引发 J1 交叉口全面回溢死锁！</div>
@@ -176,12 +233,16 @@
       </div>
 
       <!-- Section 1: Situational Awareness -->
-      <section>
+      <section id="sec-awareness">
         <div class="section-header">
-          <h2 class="section-title">
-            <span>📍</span> 1. 走廊实时交通态势感知看板 (Situational Awareness)
-          </h2>
-          <span style="font-size:13px;color:var(--text-muted);">车道级线圈与卡口多源融合感知</span>
+          <div class="section-header-left">
+            <h2 class="section-title">
+              <svg class="icon icon-red"><use href="#i-activity"/></svg>
+              <span>走廊实时交通态势感知看板</span>
+            </h2>
+            <span class="section-title-en">1 · Situational Awareness · 车道级线圈与卡口多源融合感知</span>
+          </div>
+          <span class="section-chip">多源融合感知</span>
         </div>
 
         <!-- Initial values are placeholders only: renderSituationalAwareness() fills both the
@@ -216,12 +277,16 @@
       </section>
 
       <!-- Section 1B: Baidu Map Real-Network Digital Twin (LBS) -->
-      <section>
+      <section id="sec-baidu">
         <div class="section-header">
-          <h2 class="section-title">
-            <span>🗺️</span> 1B. 真实路网数字孪生底座 (百度地图 JS API GL × LBS)
-          </h2>
-          <span style="font-size:13px;color:var(--text-muted);font-weight:600;" id="baiduMapStatusBadge">LBS: 检测中…</span>
+          <div class="section-header-left">
+            <h2 class="section-title">
+              <svg class="icon icon-blue"><use href="#i-map"/></svg>
+              <span>真实路网数字孪生底座 (百度地图 JS API GL × LBS)</span>
+            </h2>
+            <span class="section-title-en">1B · Real-Network Digital Twin Base</span>
+          </div>
+          <span class="section-chip" id="baiduMapStatusBadge">LBS: 检测中…</span>
         </div>
 
         <div class="map-panel">
@@ -231,7 +296,10 @@
               <input type="checkbox" id="baiduTrafficToggle" checked>
               <span>实时路况图层 (TrafficLayer)</span>
             </label>
-            <button class="map-route-btn" id="baiduRouteCompareBtn">🚗 真实绕行路线对比</button>
+            <button class="map-route-btn" id="baiduRouteCompareBtn">
+              <svg class="icon"><use href="#i-route"/></svg>
+              <span>真实绕行路线对比</span>
+            </button>
             <span class="map-note" id="baiduRouteNote">路径规划数据来自百度地图 API 实时返回，未经人工修饰</span>
           </div>
           <div class="map-route-cards" id="baiduRouteCards"></div>
@@ -239,12 +307,23 @@
       </section>
 
       <!-- Section 2: Agent CoT Reasoning Terminal -->
-      <section>
+      <section id="sec-cot">
         <div class="section-header">
+<<<<<<< HEAD
           <h2 class="section-title">
             <span>🧠</span> 2. 智能体思维链推理与拥堵归因 (Agent CoT Diagnosis Engine)
           </h2>
           <span style="font-size:12px;color:var(--state-info-text);font-weight:600;">LLM Reasoning Layer</span>
+=======
+          <div class="section-header-left">
+            <h2 class="section-title">
+              <svg class="icon"><use href="#i-cpu"/></svg>
+              <span>智能体思维链推理与拥堵归因</span>
+            </h2>
+            <span class="section-title-en">2 · Agent CoT Diagnosis Engine · LLM Reasoning Layer</span>
+          </div>
+          <span class="section-chip">LLM Reasoning Layer</span>
+>>>>>>> 2dd3103 (feat(ui): Signal Console visual system — modern component-library-grade redesign)
         </div>
 
         <div class="terminal-window">
@@ -267,12 +346,16 @@
       </section>
 
       <!-- Section 3: Candidate Strategies Grid -->
-      <section>
+      <section id="sec-strategy">
         <div class="section-header">
-          <h2 class="section-title">
-            <span>⚡</span> 3. 候选治理预案构想与交通工程工具集成
-          </h2>
-          <span style="font-size:12px;color:var(--text-muted);">Webster 配时 / 绿波协调 / 动态重路由集成</span>
+          <div class="section-header-left">
+            <h2 class="section-title">
+              <svg class="icon icon-amber"><use href="#i-zap"/></svg>
+              <span>候选治理预案构想与交通工程工具集成</span>
+            </h2>
+            <span class="section-title-en">3 · Candidate Strategies · Webster 配时 / 绿波协调 / 动态重路由集成</span>
+          </div>
+          <span class="section-chip">Tool Integration</span>
         </div>
 
         <div class="strategy-grid">
@@ -328,7 +411,7 @@
 
           <!-- Strategy B Card (Recommended) -->
           <div class="strategy-card strat-b recommended">
-            <span class="strategy-badge-top">⭐ 智能体推荐预案</span>
+            <span class="strategy-badge-top">智能体推荐预案</span>
             <div>
               <div class="strategy-header">
                 <span class="strategy-tag">时空协同</span>
@@ -355,12 +438,16 @@
       </section>
 
       <!-- Section 4: What-If Simulation Analytics -->
-      <section>
+      <section id="sec-rollout">
         <div class="section-header">
-          <h2 class="section-title">
-            <span>📊</span> 4. 数字孪生沙盒推演与多方案量化评估 (What-If Simulation Analytics)
-          </h2>
-          <span style="font-size:13px;color:var(--text-muted);font-weight:600;" id="rolloutOverallRating">综合评级：待推演评估</span>
+          <div class="section-header-left">
+            <h2 class="section-title">
+              <svg class="icon icon-green"><use href="#i-bar-chart"/></svg>
+              <span>数字孪生沙盒推演与多方案量化评估</span>
+            </h2>
+            <span class="section-title-en">4 · What-If Simulation Analytics</span>
+          </div>
+          <span class="section-chip" id="rolloutOverallRating">综合评级：待推演评估</span>
         </div>
 
         <!-- Data provenance banner: shown only when the payload is calibrated empirical
@@ -421,9 +508,10 @@
           <div class="chart-card">
             <div class="chart-header">
               <h3 class="chart-title">
-                <span>📌</span> 五维交通治理效能雷达图
+                <svg class="icon"><use href="#i-crosshair"/></svg>
+                <span>五维交通治理效能雷达图</span>
               </h3>
-              <span style="font-size:11px;color:var(--text-muted);">通行/治堵/容量/平稳/低碳</span>
+              <span class="section-title-en">通行/治堵/容量/平稳/低碳</span>
             </div>
             <div class="chart-container" id="radarChartContainer"></div>
           </div>
@@ -432,9 +520,10 @@
           <div class="chart-card">
             <div class="chart-header">
               <h3 class="chart-title">
-                <span>⏱️</span> 600秒推演期：瓶颈排队消散时序曲线
+                <svg class="icon"><use href="#i-activity"/></svg>
+                <span>推演期：瓶颈排队消散时序曲线</span>
               </h3>
-              <span style="font-size:11px;color:var(--text-muted);">微观车辆积压与消散动态</span>
+              <span class="section-title-en">微观车辆积压与消散动态</span>
             </div>
             <div class="chart-container" id="timeSeriesChartContainer"></div>
           </div>
@@ -442,17 +531,23 @@
       </section>
 
       <!-- Section 5: Decision Briefing & Export -->
-      <section>
+      <section id="sec-report">
         <div class="section-header">
-          <h2 class="section-title">
-            <span>📑</span> 5. 格式化决策简报与协同实施建议 (Decision Briefing)
-          </h2>
+          <div class="section-header-left">
+            <h2 class="section-title">
+              <svg class="icon"><use href="#i-file-text"/></svg>
+              <span>格式化决策简报与协同实施建议</span>
+            </h2>
+            <span class="section-title-en">5 · Decision Briefing</span>
+          </div>
           <div class="report-header-actions">
             <button class="btn-secondary" id="copyReportBtn">
-              <span>📋</span> 复制简报文本
+              <svg class="icon icon-sm"><use href="#i-copy"/></svg>
+              <span>复制简报文本</span>
             </button>
             <button class="btn-secondary" id="downloadReportBtn">
-              <span>📥</span> 导出 Markdown
+              <svg class="icon icon-sm"><use href="#i-download"/></svg>
+              <span>导出 Markdown</span>
             </button>
           </div>
         </div>
@@ -463,14 +558,19 @@
       </section>
 
       <!-- Section 6: Real Road-Network Digital Twin Map -->
-      <section>
+      <section id="sec-map">
         <div class="section-header">
-          <h2 class="section-title">
-            <span>🗺️</span> 6. 真实路网 · 数字孪生地图 (Real Road-Network Map)
-          </h2>
+          <div class="section-header-left">
+            <h2 class="section-title">
+              <svg class="icon icon-blue"><use href="#i-map"/></svg>
+              <span>真实路网 · 数字孪生地图</span>
+            </h2>
+            <span class="section-title-en">6 · Real Road-Network Map (OSM Vector Twin)</span>
+          </div>
           <div class="report-header-actions">
             <button class="btn-secondary" id="mapToggleBtn" title="切换基线 / 策略视图">
-              <span>🔄</span> <span id="mapToggleLabel">基线视图</span>
+              <svg class="icon icon-sm"><use href="#i-refresh"/></svg>
+              <span id="mapToggleLabel">基线视图</span>
             </button>
           </div>
         </div>
@@ -503,11 +603,16 @@
       </section>
 
       <!-- Section 7: Action Checklist -->
-      <section>
+      <section id="sec-checklist">
         <div class="section-header">
-          <h2 class="section-title">
-            <span>📋</span> 7. 行动指令清单 (Action Checklist)
-          </h2>
+          <div class="section-header-left">
+            <h2 class="section-title">
+              <svg class="icon"><use href="#i-list"/></svg>
+              <span>行动指令清单</span>
+            </h2>
+            <span class="section-title-en">7 · Action Checklist</span>
+          </div>
+          <span class="section-chip">实施建议</span>
         </div>
 
         <div class="action-checklist-panel">
@@ -517,11 +622,15 @@
       </section>
 
       <!-- Section 8: Per-Link Detector Table -->
-      <section>
+      <section id="sec-detectors">
         <div class="section-header">
-          <h2 class="section-title">
-            <span>📡</span> 8. 路网检测器数据 (Per-Link Detector Data)
-          </h2>
+          <div class="section-header-left">
+            <h2 class="section-title">
+              <svg class="icon"><use href="#i-radio"/></svg>
+              <span>路网检测器数据</span>
+            </h2>
+            <span class="section-title-en">8 · Per-Link Detector Data</span>
+          </div>
           <div id="engineLabel" class="engine-label" style="display:none;"></div>
         </div>
 
@@ -553,12 +662,15 @@
     </main>
 
   </div>
- 
+
   <!-- Long-task progress veil: a SUMO rollout runs for tens of seconds, so show which
        stage is executing and for how long instead of only a button spinner. -->
   <div class="task-veil" id="taskVeil" role="status" aria-live="polite">
     <div class="task-veil-card">
-      <div class="task-veil-title">智能体协同决策流水线执行中</div>
+      <div class="task-veil-title">
+        <svg class="icon"><use href="#i-cpu"/></svg>
+        <span>智能体协同决策流水线执行中</span>
+      </div>
       <div class="task-veil-step" id="taskVeilStep">准备中…</div>
       <div class="task-veil-timer" id="taskVeilTimer">0.0s</div>
       <div class="task-veil-track"><div class="task-veil-fill" id="taskVeilFill"></div></div>
@@ -570,8 +682,10 @@
   <div class="modal-backdrop" id="llmConfigModal" style="display:none;">
     <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="llmModalTitle">
       <div class="modal-header">
-        <div style="display:flex;align-items:center;gap:10px;">
-          <span style="font-size:24px;" aria-hidden="true">🤖</span>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <span class="modal-icon">
+            <svg class="icon icon-lg"><use href="#i-cpu"/></svg>
+          </span>
           <div>
             <h3 class="modal-title" id="llmModalTitle">大模型端点与自动识别 (LLM Switcher)</h3>
             <p class="modal-subtitle">像 ccSwitch 一样输入 Base URL 与 Key 即可自动探测服务商模型</p>
@@ -598,14 +712,14 @@
           <label class="form-label" for="llmApiKeyInput">API Key (密钥)</label>
           <div class="input-with-action">
             <input type="password" class="form-input" id="llmApiKeyInput" placeholder="sk-...">
-            <button class="btn-toggle-eye" id="toggleApiKeyVisibilityBtn" type="button" title="显示/隐藏密钥">👁️</button>
+            <button class="btn-toggle-eye" id="toggleApiKeyVisibilityBtn" type="button" title="显示/隐藏密钥">●</button>
           </div>
         </div>
 
-        <div style="margin-bottom:18px;">
+        <div class="form-group">
           <button class="btn-secondary" id="detectModelsBtn" style="width:100%;justify-content:center;padding:10px;font-size:13px;">
-            <div class="spinner" id="detectSpinner" style="display:none;width:14px;height:14px;"></div>
-            <span id="detectBtnText">🔍 自动识别可用模型 (Auto-detect Models)</span>
+            <div class="spinner" id="detectSpinner" style="display:none;width:14px;height:14px;border-color:currentColor;border-top-color:currentColor;"></div>
+            <span id="detectBtnText">自动识别可用模型 (Auto-detect Models)</span>
           </button>
         </div>
 
@@ -625,7 +739,7 @@
       </div>
       <div class="modal-footer">
         <button class="btn-secondary" id="cancelLlmModalBtn">取消</button>
-        <button class="btn-primary" id="saveLlmConfigBtn">💾 保存并立即生效</button>
+        <button class="btn-primary" id="saveLlmConfigBtn">保存并立即生效</button>
       </div>
     </div>
   </div>
